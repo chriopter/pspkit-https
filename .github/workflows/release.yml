@@ -1,0 +1,59 @@
+name: Release
+
+# A tag v* builds the release zip in the pspdev container, checks that the
+# demo links against it, and publishes it on a GitHub release of that tag,
+# with the tag's section of CHANGELOG.md as its notes.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    container: pspdev/pspdev:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build the zip
+        run: sh tools/package/build "${GITHUB_REF_NAME#v}"
+
+      - name: Link the demo against it
+        run: |
+          set -e
+          NAME="pspkit-https-${GITHUB_REF_NAME#v}"
+          mkdir -p /tmp/check && cd /tmp/check
+          unzip -q "$GITHUB_WORKSPACE/dist/$NAME.zip"
+          cp "$GITHUB_WORKSPACE/demo/main.c" .
+          printf 'TARGET = demo\nOBJS = main.o\nCFLAGS = -O2 -G0 -Wall\ninclude %s/module.mk\nASFLAGS = $(CFLAGS)\nEXTRA_TARGETS = EBOOT.PBP\nPSPSDK = $(shell psp-config --pspsdk-path)\ninclude $(PSPSDK)/lib/build.mak\n' "$NAME" > Makefile
+          make 2>&1 | tee build.log
+          test -f EBOOT.PBP
+          ! grep -qi warning build.log
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zip
+          path: dist/*.zip
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: zip
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="## $version" '$0 == v {on = 1; next} /^## / && on {exit} on' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" "pspkit-https-$version.zip" \
+            --title "$version" --notes-file notes.md --verify-tag

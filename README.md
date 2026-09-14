@@ -1,8 +1,8 @@
 # pspkit-https
 
-**HTTPS for PSP homebrew.** Download over TLS 1.3 from a PSP, with the
-certificate checks and the randomness a PSP does not bring by itself. Taken
-out of [PSPDX](https://github.com/chriopter/pspdx).
+**HTTPS for PSP homebrew** — download over TLS 1.3 from a PSP, with the
+certificate checks and the randomness a PSP does not bring by itself.
+**[→ Download](https://github.com/chriopter/pspkit-https/releases/latest)**
 
 <img width="480" alt="The sweep screen of the demo" src="assets/demo-sweep.png" />
 
@@ -19,27 +19,18 @@ Tested in PPSSPP so far. [`demo/`](demo/) is a complete example.
 
 ## How to use
 
-**1. Add it** to your homebrew:
+**1. Download** the zip from the
+[latest release](https://github.com/chriopter/pspkit-https/releases/latest)
+and unpack it into your homebrew, say into `lib/`. It holds the headers and
+the prebuilt libraries, wolfSSL included.
 
-```sh
-git submodule add https://github.com/chriopter/pspkit-https lib/pspkit-https
-```
-
-**2. Build wolfSSL** once, inside the pspdev container:
-
-```sh
-cd lib/pspkit-https
-docker run --rm -v "$PWD:/src" -w /src \
-    pspdev/pspdev:latest sh tools/build-wolfssl
-```
-
-**3. Include it** in your Makefile, before `build.mak`:
+**2. Include it** in your Makefile, before `build.mak`:
 
 ```make
-include lib/pspkit-https/module.mk
+include lib/pspkit-https-0.1.0/module.mk
 ```
 
-**4. Make a seed, then download.** The first start shows the sweep; every
+**3. Make a seed, then download.** The first start shows the sweep; every
 later start loads the saved seed.
 
 ```c
@@ -112,11 +103,36 @@ int main(void) {
 </details>
 
 <details>
+<summary><b>From source</b> · submodule, own wolfSSL build</summary>
+
+To change the library or build it yourself, pin a release tag as a submodule
+instead of the zip:
+
+```sh
+git submodule add https://github.com/chriopter/pspkit-https lib/pspkit-https
+git -C lib/pspkit-https checkout v0.1.0
+git submodule update --init --recursive
+cd lib/pspkit-https
+docker run --rm -v "$PWD:/src" -w /src \
+    pspdev/pspdev:latest sh tools/build-wolfssl
+```
+
+```make
+include lib/pspkit-https/module.mk
+```
+
+Updating is `git -C lib/pspkit-https checkout v0.2.0` and a commit; build
+wolfSSL again when its version changed.
+
+</details>
+
+<details>
 <summary><b>Development</b> · build, demo, tests</summary>
 
 | Command | What it does |
 |---|---|
 | `tools/build-wolfssl` | Builds wolfSSL 5.9.2 for the PSP |
+| `tools/package/build VERSION` | Builds the release zip; a `v*` tag does it on GitHub |
 | `demo/run` | Builds the demo and starts it in PPSSPP (`--fresh` starts with a sweep) |
 | `tests/nettest/run` | Measures download speed over a local connection |
 | `ca/update` | Fetches the newest root certificates |

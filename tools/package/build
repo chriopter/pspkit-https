@@ -1,0 +1,36 @@
+#!/bin/sh
+# Builds the release zip: wolfSSL from the submodule, the library as a static
+# archive, the public headers, and a module.mk that links the two. Inside the
+# pspdev container, from the repository root:
+#
+#   docker run --rm -v "$PWD:/src" -w /src pspdev/pspdev:latest sh tools/package/build 0.1.0
+#
+# Leaves dist/pspkit-https-VERSION.zip.
+set -e
+
+VERSION="${1:?usage: tools/package/build VERSION}"
+VERSION="${VERSION#v}"
+KIT="$(cd "$(dirname "$0")/../.." && pwd)"
+NAME="pspkit-https-$VERSION"
+OUT="$KIT/dist/$NAME"
+OBJ="$KIT/build/package"
+
+[ -f "$KIT/build/wolfssl/lib/libwolfssl.a" ] || sh "$KIT/tools/build-wolfssl"
+
+rm -rf "$OUT" "$OBJ" "$KIT/dist/$NAME.zip"
+mkdir -p "$OUT/lib" "$OBJ"
+SDK="$(psp-config --pspsdk-path)"
+for f in https entropy sweep sweep_ascii; do
+	psp-gcc -O2 -G0 -Wall -Wextra -D_PSP_FW_VERSION=600 \
+		-I"$SDK/include" -I"$KIT/include" -I"$KIT/build/wolfssl/include" \
+		-c "$KIT/src/$f.c" -o "$OBJ/$f.o"
+done
+psp-ar rcs "$OUT/lib/libpspkit-https.a" "$OBJ"/*.o
+cp "$KIT/build/wolfssl/lib/libwolfssl.a" "$OUT/lib/"
+cp -r "$KIT/include" "$OUT/include"
+cp "$KIT/tools/package/module.mk" "$OUT/module.mk"
+cp "$KIT/README.md" "$KIT/CHANGELOG.md" "$KIT/LICENSE" "$OUT/"
+printf '%s\n' "$VERSION" >"$OUT/VERSION"
+(cd "$KIT/dist" && zip -q -r "$NAME.zip" "$NAME")
+rm -rf "$OBJ"
+echo "dist/$NAME.zip"

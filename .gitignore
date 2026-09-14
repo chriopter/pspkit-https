@@ -11,6 +11,9 @@ PARAM.SFO
 # wolfSSL, built from the submodule by tools/build-wolfssl
 /build/
 
+# tools/package/build: the release zip and the tree it packs
+/dist/
+
 # A run in PPSSPP
 ppsspp.out
 

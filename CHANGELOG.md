@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0
 
 - HTTPS, the entropy pool and the sweep taken out of PSPDX
 - Mozilla's whole root store instead of a hand-picked few, parsed once a run on a thread of its own; a weekly workflow opens a pull request when it changes
@@ -11,6 +11,7 @@
 - An accepted certificate doubt covers its host only
 - A cleaned-up API: `https_net_connect`/`https_net_disconnect`, `https_set_cipher_suites`, `https_set_rate_limit`, `https_doubt_accept`, getters named `*_get_*`, `sweep_step` taking the buttons; every declaration says which thread may call it
 - `demo/`: an ASCII sweep that shows its turns and presses, and a fetch that can be cancelled
+- Released as a zip with prebuilt libraries: headers, `libpspkit-https.a`, `libwolfssl.a` and a `module.mk`
 - `tests/nettest`, `tools/entropy-sim`
 
 ## 0.0.1
