@@ -1,0 +1,26 @@
+# Objects and dependency files, next to their sources
+*.o
+*.d
+
+# What build.mak leaves in demo/ and tests/
+*.elf
+*.prx
+EBOOT.PBP
+PARAM.SFO
+
+# wolfSSL, built from the submodule by tools/build-wolfssl
+/build/
+
+# A run in PPSSPP
+ppsspp.out
+
+# tests/nettest/run: the throwaway CA, the header that trusts it, the payload
+/tests/nettest/testca.h
+/tests/nettest/work/
+
+# tools/entropy-sim: its compiled simulators
+/tools/entropy-sim/sim
+/tools/entropy-sim/sim-hardened
+
+# Python
+__pycache__/

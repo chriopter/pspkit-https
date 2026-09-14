@@ -1,0 +1,30 @@
+#!/bin/sh
+# Builds the demo and starts it in PPSSPP. Needs Docker and the PPSSPP
+# Flatpak, and no other PPSSPP running: the two would share one stick.
+#
+#   demo/run           the seed from the last start, if there is one
+#   demo/run --fresh   without it, so the sweep comes first
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+KIT="$(cd "$HERE/.." && pwd)"
+MS="$HOME/.var/app/org.ppsspp.PPSSPP/config/ppsspp"
+GAME="$MS/PSP/GAME/pspkit-demo"
+
+if pgrep -x PPSSPPSDL >/dev/null; then
+	echo "PPSSPP is already running; close it first" >&2
+	exit 1
+fi
+# The objects next to the library's sources may be another build's --
+# tests/nettest/run builds them against a throwaway CA -- so they are made again.
+rm -f "$KIT"/src/*.o "$KIT"/src/*.d "$HERE"/*.o "$HERE"/*.d "$HERE/EBOOT.PBP"
+docker run --rm -v "$KIT:/src" -w /src/demo pspdev/pspdev:latest make 2>&1 \
+	| grep -E 'warning|error|EBOOT' || true
+[ -f "$HERE/EBOOT.PBP" ] || { echo "no EBOOT" >&2; exit 1; }
+
+mkdir -p "$GAME"
+cp "$HERE/EBOOT.PBP" "$GAME/"
+[ "$1" = "--fresh" ] && rm -f "$GAME/seed.bin"
+SDL_VIDEODRIVER=wayland setsid flatpak run --socket=wayland --share=network \
+	--filesystem="$MS" org.ppsspp.PPSSPP --fullscreen=0 \
+	"$GAME/EBOOT.PBP" >"$HERE/ppsspp.out" 2>&1 &
+echo "started"

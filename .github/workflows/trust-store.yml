@@ -1,0 +1,63 @@
+name: Trust store
+
+# Once a week: Mozilla's roots as curl publishes them, checked against
+# curl's hash by ca/update. When they changed, the new ca/cacert.pem and
+# src/ca_bundle.h go into one pull request on the branch ca-update, opened
+# the first time and refreshed while it stays open, so a quiet month does
+# not pile up four of them.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch and regenerate
+        id: update
+        run: |
+          sh ca/update | tee "$RUNNER_TEMP/update.txt"
+          if git diff --quiet -- ca src/ca_bundle.h; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or refresh the pull request
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          dated=$(sed -n 's/^## Certificate data from Mozilla as of: //p' ca/cacert.pem)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C ca-update
+          git add ca/cacert.pem ca/cacert.pem.sha256 src/ca_bundle.h
+          git commit -q -m "Take Mozilla's roots as of $dated" -m "$(cat "$RUNNER_TEMP/update.txt")"
+          git push --force origin ca-update
+
+          {
+            echo "Mozilla's root store changed; this is the weekly check."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/update.txt"
+            echo '```'
+            echo
+            echo "The file matched the SHA-256 curl publishes beside it. Squash and merge, so the commit on $BASE carries GitHub's signature; then bump the submodule in the applications that use the library."
+          } > "$RUNNER_TEMP/body.md"
+
+          open=$(gh pr list --head ca-update --state open --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh pr edit "$open" --title "Trust store: Mozilla as of $dated" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --base "$BASE" --head ca-update \
+              --title "Trust store: Mozilla as of $dated" --body-file "$RUNNER_TEMP/body.md"
+          fi

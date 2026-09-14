@@ -1,0 +1,3 @@
+The counting of the first hardening (hold 4 samples, eleven turn predictors,
+walls and old ground unpaid, min(2, -log2 p / (1 - p)) per unguessed turn,
+no timing), kept verbatim so report.py can show it as the middle column.

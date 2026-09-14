@@ -1,0 +1,31 @@
+#!/bin/sh
+# Takes the newest Mozilla root store from curl, checks it against the hash
+# curl publishes beside it, says which roots came and went, and writes
+# src/ca_bundle.h again. Commit ca/ and src/ca_bundle.h together.
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+curl -sSfo "$TMP/cacert.pem" https://curl.se/ca/cacert.pem
+curl -sSfo "$TMP/cacert.pem.sha256" https://curl.se/ca/cacert.pem.sha256
+(cd "$TMP" && sha256sum -c --quiet cacert.pem.sha256) || {
+	echo "cacert.pem does not match the hash curl publishes; nothing changed" >&2
+	exit 1
+}
+dated() { sed -n 's/^## Certificate data from Mozilla as of: //p' "$1"; }
+if cmp -s "$TMP/cacert.pem" "$HERE/cacert.pem"; then
+	echo "already the newest, Mozilla as of $(dated "$HERE/cacert.pem")"
+	exit 0
+fi
+
+# A root's name is the line above its row of equals signs.
+names() { awk '/^=+$/ { print prev } { prev = $0 }' "$1" | sort; }
+names "$HERE/cacert.pem" >"$TMP/old"
+names "$TMP/cacert.pem" >"$TMP/new"
+echo "Mozilla as of $(dated "$HERE/cacert.pem") -> $(dated "$TMP/cacert.pem")"
+comm -13 "$TMP/old" "$TMP/new" | sed 's/^/  + /'
+comm -23 "$TMP/old" "$TMP/new" | sed 's/^/  - /'
+
+cp "$TMP/cacert.pem" "$TMP/cacert.pem.sha256" "$HERE/"
+python3 "$HERE/generate"

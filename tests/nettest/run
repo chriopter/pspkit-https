@@ -1,0 +1,84 @@
+#!/bin/sh
+# Builds the test, starts a plain and a TLS server on the host serving the
+# same five megabytes, runs the test in PPSSPP, and prints what it logged.
+# Needs Docker, OpenSSL, Python and the PPSSPP Flatpak, and no other PPSSPP
+# running: the two would share one memory stick.
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+KIT="$(cd "$HERE/../.." && pwd)"
+WORK="$HERE/work"
+MS="$HOME/.var/app/org.ppsspp.PPSSPP/config/ppsspp"
+LOG="$MS/PSP/GAME/nettest/nettest.log"
+
+if pgrep -x PPSSPPSDL >/dev/null; then
+	echo "PPSSPP is already running; close it first" >&2
+	exit 1
+fi
+
+# A CA, a certificate for the loopback address, and the header that makes
+# the test trust that CA alone. Once; the files last thirty days. The five
+# megabytes are noise, so nothing along the way can compress them.
+mkdir -p "$WORK"
+if [ ! -f "$WORK/ca.crt" ]; then
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+		-keyout "$WORK/ca.key" -out "$WORK/ca.crt" -days 30 -subj "/CN=nettest CA" >/dev/null 2>&1
+	openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+		-keyout "$WORK/srv.key" -out "$WORK/srv.csr" -subj "/CN=127.0.0.1" >/dev/null 2>&1
+	printf 'subjectAltName=IP:127.0.0.1\n' >"$WORK/san.cnf"
+	openssl x509 -req -in "$WORK/srv.csr" -CA "$WORK/ca.crt" -CAkey "$WORK/ca.key" \
+		-CAcreateserial -out "$WORK/srv.crt" -days 30 -extfile "$WORK/san.cnf" >/dev/null 2>&1
+fi
+{
+	echo '/* Throwaway CA for tests/nettest/run; defines ca_bundle.h'"'"'s guard'
+	echo '   so the test trusts this and nothing else. Generated. */'
+	echo '#ifndef PSPKIT_HTTPS_CA_BUNDLE_H'
+	echo '#define PSPKIT_HTTPS_CA_BUNDLE_H'
+	echo '#define PSPKIT_HTTPS_TEST_CA'
+	echo 'static const char PSPKIT_HTTPS_CA_PEM[] ='
+	sed 's/.*/"&\\n"/' "$WORK/ca.crt"
+	echo ';'
+	echo '#endif'
+} >"$HERE/testca.h"
+[ -f "$WORK/5MB.bin" ] || head -c 5242880 /dev/urandom >"$WORK/5MB.bin"
+
+# The library's objects are built here against the test CA, so they go
+# before and after: an application built from the same checkout must never
+# link them.
+clean() { rm -f "$KIT"/src/*.o "$KIT"/src/*.d "$HERE"/*.o "$HERE"/*.d; }
+clean
+rm -f "$HERE/EBOOT.PBP"
+docker run --rm -v "$KIT:/src" -w /src/tests/nettest pspdev/pspdev:latest make 2>&1 \
+	| grep -E 'warning|error|EBOOT' || true
+clean
+[ -f "$HERE/EBOOT.PBP" ] || { echo "no EBOOT" >&2; exit 1; }
+
+cd "$WORK"
+python3 -m http.server 8080 --bind 127.0.0.1 >/dev/null 2>&1 &
+RAW=$!
+python3 - <<'PY' &
+import http.server, ssl
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+ctx.load_cert_chain('srv.crt', 'srv.key')
+srv = http.server.ThreadingHTTPServer(('127.0.0.1', 8443), http.server.SimpleHTTPRequestHandler)
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+srv.serve_forever()
+PY
+TLSPID=$!
+trap 'kill $RAW $TLSPID 2>/dev/null || true' EXIT
+sleep 1
+
+mkdir -p "$MS/PSP/GAME/nettest"
+cp "$HERE/EBOOT.PBP" "$MS/PSP/GAME/nettest/"
+rm -f "$LOG"
+SDL_VIDEODRIVER=wayland setsid flatpak run --socket=wayland --share=network \
+	--filesystem="$MS" org.ppsspp.PPSSPP --fullscreen=0 \
+	"$MS/PSP/GAME/nettest/EBOOT.PBP" >"$HERE/ppsspp.out" 2>&1 &
+PID=$!
+for i in $(seq 1 120); do
+	sleep 1
+	grep -q '^done' "$LOG" 2>/dev/null && break
+done
+kill -- -"$PID" 2>/dev/null || kill "$PID" 2>/dev/null || true
+cat "$LOG" 2>/dev/null || echo "no log"
+grep -q '^done' "$LOG" 2>/dev/null
