@@ -6,8 +6,7 @@ out of [PSPDX](https://github.com/chriopter/pspdx).
 
 <img width="480" alt="The sweep screen of the demo" src="assets/demo-sweep.png" />
 
-*The demo's sweep: the player steers `@` with the analog stick and smashes
-buttons (`*`) until the bar is full. Below, what each turn and press was worth.*
+*Stick and buttons make the seed for wolfSSL's random number generator.*
 
 ## What it does
 
