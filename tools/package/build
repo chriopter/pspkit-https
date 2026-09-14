@@ -15,6 +15,7 @@ NAME="pspkit-https-$VERSION"
 OUT="$KIT/dist/$NAME"
 OBJ="$KIT/build/package"
 
+command -v zip >/dev/null || { echo "zip is missing: apk add zip" >&2; exit 1; }
 [ -f "$KIT/build/wolfssl/lib/libwolfssl.a" ] || sh "$KIT/tools/build-wolfssl"
 
 rm -rf "$OUT" "$OBJ" "$KIT/dist/$NAME.zip"

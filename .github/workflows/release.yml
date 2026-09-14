@@ -19,6 +19,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Tools the container lacks
+        run: |
+          apk add --no-cache zip unzip
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/wolfssl"
+
       - name: Build the zip
         run: sh tools/package/build "${GITHUB_REF_NAME#v}"
 
