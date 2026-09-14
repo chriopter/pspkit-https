@@ -1,0 +1,15 @@
+#!/bin/sh
+# src/https.c on the PC against a scripted server: the request it writes and
+# what the result makes of the answer's head. No PSP, no network, no wolfSSL
+# -- stub/ stands in for all three -- so it runs anywhere with a C compiler.
+#
+#   tests/request/run            VERBOSE=1 prints the library's log
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+KIT="$(cd "$HERE/../.." && pwd)"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+cc -O1 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -pthread \
+	-I"$HERE/stub" -I"$KIT/include" -include "$HERE/stub/testca.h" \
+	"$KIT/src/https.c" "$HERE/main.c" -o "$WORK/request"
+"$WORK/request"

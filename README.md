@@ -42,7 +42,7 @@ the prebuilt libraries, wolfSSL included.
 **2. Include it** in your Makefile, before `build.mak`:
 
 ```make
-include lib/pspkit-https-0.1.0/module.mk
+include lib/pspkit-https-0.2.0/module.mk
 ```
 
 **3. Make a seed, then download.** The first start shows the sweep; every
@@ -81,6 +81,7 @@ int main(void) {
 - Redirects are followed (up to 5), but never from `https://` down to `http://`
 - Connections to the same server are reused for 30 seconds
 - `https_abort()` stops a download from any thread
+- `https_set_accept_gzip(1)` asks for gzip; the body reaches your sink as sent, `content_encoding` in the result names it, and inflating is yours (zlib's `inflateInit2` with `16 + MAX_WBITS`). Off by default, and best left off for files that are already compressed
 - Not supported: chunked responses, POST, IPv6, two downloads at once
 
 </details>
@@ -125,7 +126,7 @@ instead of the zip:
 
 ```sh
 git submodule add https://github.com/chriopter/pspkit-https lib/pspkit-https
-git -C lib/pspkit-https checkout v0.1.0
+git -C lib/pspkit-https checkout v0.2.0
 git submodule update --init --recursive
 cd lib/pspkit-https
 docker run --rm -v "$PWD:/src" -w /src \
@@ -150,6 +151,7 @@ wolfSSL again when its version changed.
 | `tools/package/build VERSION` | Builds the release zip; a `v*` tag does it on GitHub |
 | `demo/run` | Builds the demo and starts it in PPSSPP (`--fresh` starts with a sweep) |
 | `tests/nettest/run` | Measures download speed over a local connection |
+| `tests/request/run` | Checks the request and the response head on the PC, against a scripted server |
 | `ca/update` | Fetches the newest root certificates |
 | `tools/entropy-sim` | Tests the seed counting against lazy input on the PC |
 

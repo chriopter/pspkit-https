@@ -62,6 +62,11 @@ static void logline(const char *fmt, ...) {
 static const char *g_agent = DEFAULT_AGENT;
 void https_set_user_agent(const char *agent) { g_agent = agent ? agent : DEFAULT_AGENT; }
 
+/* Off unless asked: a sink that does not expect gzip would store it as the
+   file, and a ZIP gains nothing from being compressed again. */
+static int g_accept_gzip;
+void https_set_accept_gzip(int on) { g_accept_gzip = on != 0; }
+
 static unsigned now_ms(void) {
     return (unsigned)(sceKernelGetSystemTimeWide() / 1000);
 }
@@ -854,6 +859,7 @@ static int one_request(const struct url *u, https_sink sink, void *sink_ctx,
     res->body_len = 0;
     res->content_length = 0;
     res->truncated = 0;
+    res->content_encoding[0] = '\0';          /* a redirect's is not the body's */
     if (conn) {
         sock = conn->sock;
         ssl = conn->ssl;
@@ -982,7 +988,9 @@ request:
                           "GET %s HTTP/1.1\r\n"
                           "Host: %s\r\n"
                           "User-Agent: %s\r\n"
-                          "Connection: keep-alive\r\n\r\n", u->path, authority, g_agent);
+                          "%s"
+                          "Connection: keep-alive\r\n\r\n", u->path, authority, g_agent,
+                          g_accept_gzip ? "Accept-Encoding: gzip\r\n" : "");
     if (reqlen <= 0 || reqlen >= (int)sizeof(buf)) { logline("request too long"); goto out; }
 
     start = now_ms();
@@ -1056,6 +1064,16 @@ request:
                     have_length = 1;
                 }
                 res->content_length = want;
+                /* Named, not decoded: the caller asked for it and knows what
+                   to do with it. Blanks before the line's end are not part of it. */
+                const char *ce = header(head, hl, "Content-Encoding");
+                if (ce) {
+                    size_t n = (size_t)(mem_find(ce, (size_t)(head + hl - ce), "\r\n", 2) - ce);
+                    while (n && (ce[n - 1] == ' ' || ce[n - 1] == '\t')) n--;
+                    if (n >= sizeof(res->content_encoding)) n = sizeof(res->content_encoding) - 1;
+                    memcpy(res->content_encoding, ce, n);
+                    res->content_encoding[n] = '\0';
+                }
                 const char *te = header(head, hl, "Transfer-Encoding");
                 if (te) chunked = 1;
                 const char *connection = header(head, hl, "Connection");

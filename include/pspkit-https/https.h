@@ -26,6 +26,13 @@ void https_set_log(void (*line)(const char *text));
    CR and LF are invalid; a request using such an agent fails. */
 void https_set_user_agent(const char *agent);
 
+/* Worker, between requests: nonzero adds "Accept-Encoding: gzip" to every
+   request until turned off again; zero, the default, asks for nothing. The
+   body still reaches the sink as the server sent it -- the library does not
+   inflate -- so turn it on only for requests whose sink handles gzip, and
+   read content_encoding in the result. A server may answer plain anyway. */
+void https_set_accept_gzip(int on);
+
 /* Worker, between requests: cap received data in decimal kilobytes per
    second; zero removes the limit. */
 void https_set_rate_limit(unsigned kbps);
@@ -61,6 +68,8 @@ struct https_result {
     unsigned handshake_ms;       /* Final handshake duration; zero for reuse. */
     int redirects;               /* Redirects followed, from zero to five. */
     char host[128];               /* Final host, or empty before URL parsing. */
+    char content_encoding[16];    /* Final response's Content-Encoding as sent,
+                                     cut to 15 bytes; empty when absent. */
 };
 
 struct https_info {
@@ -106,7 +115,8 @@ void https_doubt_accept(void);
 enum https_outcome { HTTPS_FAILED = -1, HTTPS_COMPLETE = 0, HTTPS_TRUNCATED = 1 };
 
 /* Worker after a successful connect: GET a non-NULL https:// URL, following
-   up to five redirects. HTTP downgrades and transfer encodings are refused.
+   up to five redirects. HTTP downgrades and transfer encodings are refused;
+   a content encoding reaches the sink undecoded and is named in the result.
    Hosts are DNS names or IPv4 literals; IPv6 and URL userinfo are unsupported.
    COMPLETE means a whole body, regardless of HTTP status; inspect status
    for 4xx/5xx. TRUNCATED means headers were accepted but the body stopped,

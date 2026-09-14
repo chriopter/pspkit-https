@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- `https_set_accept_gzip()` asks for `Accept-Encoding: gzip`; off by default. The library still does not inflate
+- `struct https_result` names the final response's `Content-Encoding` in `content_encoding`
+- `tests/request`: `src/https.c` on the PC against a scripted server, stubs in place of the PSP and wolfSSL
+
 ## 0.1.0
 
 - HTTPS, the entropy pool and the sweep taken out of PSPDX
