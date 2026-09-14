@@ -17,6 +17,21 @@ certificate checks and the randomness a PSP does not bring by itself.
 
 Tested in PPSSPP so far. [`demo/`](demo/) is a complete example.
 
+## Speed
+
+Measured in PPSSPP, best case ChaCha20-Poly1305 with X25519:
+
+| | |
+|---|---|
+| Parsing the 121 roots, once per run | 38 ms |
+| TLS 1.3 handshake, local server | 166–171 ms |
+| TLS 1.3 handshake, GitHub Pages | 187–307 ms |
+| 5 MB with ChaCha20-Poly1305 | 1.3 s |
+| 5 MB with AES-128-GCM | 4.8 s |
+
+The emulator runs on a PC's CPU; on a real PSP the 802.11b radio sets the
+pace, and ChaCha is the cipher that keeps the CPU out of the way.
+
 ## How to use
 
 **1. Download** the zip from the
