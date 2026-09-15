@@ -42,7 +42,7 @@ the prebuilt libraries, wolfSSL included.
 **2. Include it** in your Makefile, before `build.mak`:
 
 ```make
-include lib/pspkit-https-0.2.0/module.mk
+include lib/pspkit-https-0.2.1/module.mk
 ```
 
 **3. Make a seed, then download.** The first start shows the sweep; every
@@ -126,7 +126,7 @@ instead of the zip:
 
 ```sh
 git submodule add https://github.com/chriopter/pspkit-https lib/pspkit-https
-git -C lib/pspkit-https checkout v0.2.0
+git -C lib/pspkit-https checkout v0.2.1
 git submodule update --init --recursive
 cd lib/pspkit-https
 docker run --rm -v "$PWD:/src" -w /src \
@@ -137,7 +137,7 @@ docker run --rm -v "$PWD:/src" -w /src \
 include lib/pspkit-https/module.mk
 ```
 
-Updating is `git -C lib/pspkit-https checkout v0.2.0` and a commit; build
+Updating is `git -C lib/pspkit-https checkout v0.2.1` and a commit; build
 wolfSSL again when its version changed.
 
 </details>

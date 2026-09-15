@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- A bare CR or LF, or another control byte, in a response head is refused instead of joining one header's value to the next line
+- A 204 or 304 reports a `content_length` of 0, whatever length its head names, since it has no body
+- Blanks after a `Location` value are trimmed, so the redirect is followed
+
 ## 0.2.0
 
 - `https_set_accept_gzip()` asks for `Accept-Encoding: gzip`; off by default. The library still does not inflate

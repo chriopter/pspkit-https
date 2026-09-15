@@ -28,6 +28,7 @@ static size_t answer_at;
 static int answer;
 static char body[256];
 static size_t body_len;
+static unsigned chunk_seed;          /* nonzero: reads end at random points */
 
 int wolfSSL_write(WOLFSSL *ssl, const void *data, int size) {
     size_t have = strlen(requests);
@@ -45,6 +46,11 @@ int wolfSSL_read(WOLFSSL *ssl, void *data, int size) {
     if (!a) return 0;
     size_t n = strlen(a) - answer_at;
     if (n > (size_t)size) n = (size_t)size;
+    if (chunk_seed) {
+        chunk_seed = chunk_seed * 1103515245u + 12345u;
+        size_t cut = 1 + (chunk_seed >> 16) % 61;
+        if (n > cut) n = cut;
+    }
     memcpy(data, a + answer_at, n);
     answer_at += n;
     if (!a[answer_at]) { answer++; answer_at = 0; }
@@ -133,6 +139,57 @@ int main(void) {
     CHECK(get("http://example.org/h", &r, NULL, NULL) == HTTPS_FAILED);
     CHECK(r.content_encoding[0] == '\0');
 
+    /* A bare CR or LF in the head is refused, not copied into a value. */
+    CHECK(get("https://example.org/i", &r,
+              "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r'\nX: y\r\nContent-Length: 0\r\n\r\n",
+              NULL) == HTTPS_FAILED);
+    CHECK(r.content_encoding[0] == '\0');
+    CHECK(get("https://example.org/j", &r, "HTTP/1.1 200 OK\nContent-Length: 1\n\r\n\r\nx", NULL) ==
+          HTTPS_FAILED);
+    /* A 204 announces no body, whatever length it names. */
+    CHECK(get("https://example.org/k", &r, "HTTP/1.1 204 No Content\r\nContent-Length: 10\r\n\r\n",
+              NULL) == HTTPS_COMPLETE);
+    CHECK(r.content_length == 0 && r.body_len == 0);
+    /* Blanks after a Location are not part of it. */
+    CHECK(get("https://example.org/l", &r,
+              "HTTP/1.1 302 Found\r\nLocation: https://example.com/m \t\r\nContent-Length: 0\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok") == HTTPS_COMPLETE);
+    CHECK(r.redirects == 1 && !strcmp(r.host, "example.com"));
+
+    /* The same answers cut at random points read the same as whole. */
+    static const char *const script[][2] = {
+        { "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Encoding: gzip\r\n\r\n\x1f\x8b\x08\x01", NULL },
+        { "HTTP/1.1 302 Found\r\nLocation: /next?x=1\r\nContent-Length: 3\r\n\r\nabc",
+          "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world" },
+        { "HTTP/1.0 200 OK\r\nContent-Encoding:  x-something-long, gzip\r\n\r\nuntil the close", NULL },
+        { "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloEXTRA", NULL },
+        { "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nshort", NULL },
+        { "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", NULL },
+        { "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx", NULL },
+    };
+    for (unsigned c = 0; c < sizeof(script) / sizeof(*script); c++) {
+        struct https_result whole, cut;
+        char whole_body[256];
+        chunk_seed = 0;
+        enum https_outcome want = get("https://example.org/r", &whole, script[c][0], script[c][1]);
+        size_t whole_len = body_len;
+        memcpy(whole_body, body, body_len);
+        for (unsigned seed = 1; seed <= 3000; seed++) {
+            https_close_idle();
+            chunk_seed = seed;
+            enum https_outcome got = get("https://example.org/r", &cut, script[c][0], script[c][1]);
+            if (got != want || cut.status != whole.status || cut.body_len != whole.body_len ||
+                cut.content_length != whole.content_length || cut.redirects != whole.redirects ||
+                strcmp(cut.content_encoding, whole.content_encoding) || body_len != whole_len ||
+                memcmp(body, whole_body, body_len)) {
+                fprintf(stderr, "script %u differs when cut with seed %u\n", c, seed);
+                failures++;
+                break;
+            }
+        }
+        chunk_seed = 0;
+    }
+
     https_net_disconnect();
     printf("request: %s\n", failures ? "FAILED" : "ok");
     return failures != 0;
@@ -200,7 +257,11 @@ void wolfSSL_CTX_SetIORecv(WOLFSSL_CTX *ctx, CallbackIORecv recv) {}
 void wolfSSL_CTX_SetIOSend(WOLFSSL_CTX *ctx, CallbackIOSend send) {}
 int wolfSSL_CTX_set_groups(WOLFSSL_CTX *ctx, int *groups, int count) { return WOLFSSL_SUCCESS; }
 WOLFSSL *wolfSSL_new(WOLFSSL_CTX *ctx) { return (WOLFSSL *)&dummy; }
-void wolfSSL_free(WOLFSSL *ssl) {}
+/* A session that ends takes what it had not read with it: the next request
+   is on a connection of its own and starts at the next answer. */
+void wolfSSL_free(WOLFSSL *ssl) {
+    if (answer_at) { answer++; answer_at = 0; }
+}
 int wolfSSL_shutdown(WOLFSSL *ssl) { return WOLFSSL_SUCCESS; }
 int wolfSSL_set_cipher_list(WOLFSSL *ssl, const char *list) { return WOLFSSL_SUCCESS; }
 void wolfSSL_SetIOReadCtx(WOLFSSL *ssl, void *ctx) {}

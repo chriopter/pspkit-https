@@ -454,6 +454,22 @@ static int connection_closes(const char *value, const char *end) {
     return 0;
 }
 
+/* A head is lines of printable bytes and tabs, each ended by CRLF. A bare CR
+   or LF, or another control byte, would let one header's value run into the
+   next line: a Content-Encoding of "gzip\r\nLocation..." was copied whole. */
+static int head_clean(const char *head, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)head[i];
+        if (c == '\r') {
+            if (i + 1 >= len || head[i + 1] != '\n') return 0;
+            i++;
+        } else if ((c < 32 && c != '\t') || c == 127) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* ------------------------------------------------------------------- url */
 
 /* A GitHub release download redirects to a signed URL well over 512 bytes. */
@@ -1042,7 +1058,7 @@ request:
                 if (hl < 16 || (memcmp(head, "HTTP/1.1 ", 9) && memcmp(head, "HTTP/1.0 ", 9)) ||
                     head[9] < '1' || head[9] > '5' || head[10] < '0' || head[10] > '9' ||
                     head[11] < '0' || head[11] > '9' || (head[12] != ' ' && head[12] != '\r') ||
-                    memchr(head, '\0', hl)) {
+                    !head_clean(head, hl)) {
                     logline("http: bad status line");
                     goto out;
                 }
@@ -1087,6 +1103,8 @@ request:
                     const char *loc = header(head, hl, "Location");
                     if (loc) {
                         const char *eol = mem_find(loc, (size_t)(head + hl - loc), "\r\n", 2);
+                        /* Blanks before the line's end are not the value. */
+                        while (eol && eol > loc && (eol[-1] == ' ' || eol[-1] == '\t')) eol--;
                         if (eol && url_resolve(u, loc, (size_t)(eol - loc), redirect) == 0) {
                             logline("http %ld -> %s", res->status, redirect->host);
                             ret = 2;
@@ -1104,7 +1122,11 @@ request:
                 }
                 /* These statuses have no message body even when metadata
                    announces the length of the corresponding representation. */
-                if (res->status == 204 || res->status == 304) { want = 0; have_length = 1; }
+                if (res->status == 204 || res->status == 304) {
+                    want = 0;
+                    have_length = 1;
+                    res->content_length = 0;
+                }
                 logline("http %ld, %lu bytes announced", res->status, (unsigned long)want);
                 phase("download");
                 if (progress) progress(progress_ctx, 0, want);
