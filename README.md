@@ -42,7 +42,7 @@ the prebuilt libraries, wolfSSL included.
 **2. Include it** in your Makefile, before `build.mak`:
 
 ```make
-include lib/pspkit-https-0.2.1/module.mk
+include lib/pspkit-https-0.2.2/module.mk
 ```
 
 **3. Make a seed, then download.** The first start shows the sweep; every
@@ -79,6 +79,8 @@ int main(void) {
 - ChaCha20-Poly1305 is used first: the PSP has no AES hardware, and 5 MB take 1.3 s with ChaCha against 4.8 s with AES-GCM
 - X25519 for the key exchange, about seven times faster than P-256 on a PSP
 - Redirects are followed (up to 5), but never from `https://` down to `http://`
+- Timeouts: 10 s to connect, 20 s for the handshake, 30 s for the whole response head, then 30 s without a byte of body. A slow body is never cut off for being slow, so a big download on 802.11b can finish
+- `https_set_time_limit(seconds)` gives a whole `https_get` a bound, redirects included: `FAILED` if it runs out before the body, `TRUNCATED` after. Off by default
 - Connections to the same server are reused for 30 seconds
 - `https_abort()` stops a download from any thread
 - `https_set_accept_gzip(1)` asks for gzip; the body reaches your sink as sent, `content_encoding` in the result names it, and inflating is yours (zlib's `inflateInit2` with `16 + MAX_WBITS`). Off by default, and best left off for files that are already compressed
@@ -126,7 +128,7 @@ instead of the zip:
 
 ```sh
 git submodule add https://github.com/chriopter/pspkit-https lib/pspkit-https
-git -C lib/pspkit-https checkout v0.2.1
+git -C lib/pspkit-https checkout v0.2.2
 git submodule update --init --recursive
 cd lib/pspkit-https
 docker run --rm -v "$PWD:/src" -w /src \
@@ -137,7 +139,7 @@ docker run --rm -v "$PWD:/src" -w /src \
 include lib/pspkit-https/module.mk
 ```
 
-Updating is `git -C lib/pspkit-https checkout v0.2.1` and a commit; build
+Updating is `git -C lib/pspkit-https checkout v0.2.2` and a commit; build
 wolfSSL again when its version changed.
 
 </details>

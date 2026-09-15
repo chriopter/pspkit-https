@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- A response head has 30 seconds in all from the request. The 30-second stall timeout started over with every byte, so a server sending a byte a second held a request without end
+- `https_set_time_limit()` bounds a whole `https_get`, redirects included; off by default, so a slow body is still only cut off after 30 seconds without a byte
+- `tests/request` plays a server that trickles, for the head, the body and the limit
+
 ## 0.2.1
 
 - A bare CR or LF, or another control byte, in a response head is refused instead of joining one header's value to the next line

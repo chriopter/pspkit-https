@@ -29,6 +29,9 @@ static int answer;
 static char body[256];
 static size_t body_len;
 static unsigned chunk_seed;          /* nonzero: reads end at random points */
+static unsigned trickle_ms;          /* nonzero: a byte a read, this far apart */
+static int trickle_waiting;
+static SceInt64 clock_us = 1000000;  /* the PSP's clock; each look moves it 1 ms */
 
 int wolfSSL_write(WOLFSSL *ssl, const void *data, int size) {
     size_t have = strlen(requests);
@@ -44,8 +47,14 @@ int wolfSSL_write(WOLFSSL *ssl, const void *data, int size) {
 int wolfSSL_read(WOLFSSL *ssl, void *data, int size) {
     const char *a = answer < 4 ? answers[answer] : NULL;
     if (!a) return 0;
+    /* A slow server: nothing yet while the time passes, then one byte. */
+    if (trickle_ms && (trickle_waiting = !trickle_waiting)) {
+        clock_us += trickle_ms * 1000;
+        return -1;
+    }
     size_t n = strlen(a) - answer_at;
     if (n > (size_t)size) n = (size_t)size;
+    if (trickle_ms) n = 1;
     if (chunk_seed) {
         chunk_seed = chunk_seed * 1103515245u + 12345u;
         size_t cut = 1 + (chunk_seed >> 16) % 61;
@@ -57,7 +66,9 @@ int wolfSSL_read(WOLFSSL *ssl, void *data, int size) {
     return (int)n;
 }
 
-int wolfSSL_get_error(WOLFSSL *ssl, int ret) { return WOLFSSL_ERROR_ZERO_RETURN; }
+int wolfSSL_get_error(WOLFSSL *ssl, int ret) {
+    return ret < 0 ? WOLFSSL_ERROR_WANT_READ : WOLFSSL_ERROR_ZERO_RETURN;
+}
 
 static int sink(void *ctx, const void *data, size_t len) {
     if (body_len + len > sizeof(body)) return 1;
@@ -75,6 +86,7 @@ static enum https_outcome get(const char *url, struct https_result *r, const cha
     answer = 0;
     answer_at = 0;
     body_len = 0;
+    trickle_waiting = 0;
     return https_get(url, sink, NULL, NULL, NULL, r);
 }
 
@@ -156,6 +168,43 @@ int main(void) {
               "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok") == HTTPS_COMPLETE);
     CHECK(r.redirects == 1 && !strcmp(r.host, "example.com"));
 
+    /* A head that trickles in has 30 s in all, not 30 s a byte: at a byte a
+       second this one would take more than a minute. */
+    static const char slow[] = "HTTP/1.1 200 OK\r\nX-Pad: a head that takes its time\r\n"
+                               "Content-Length: 80\r\n\r\n"
+                               "eighty bytes of body, sent at the pace of the head before it, "
+                               "and not any faster";
+    CHECK(strlen(strstr(slow, "\r\n\r\n") + 4) == 80);
+    https_close_idle();
+    trickle_ms = 1000;
+    SceInt64 began = clock_us;
+    CHECK(get("https://example.org/s", &r, slow, NULL) == HTTPS_FAILED);
+    CHECK(r.status == 0 && r.body_len == 0);
+    CHECK(clock_us - began < 32 * 1000000);
+    /* At half a second a byte the head takes 35 s and fails as well, but at
+       a quarter it takes 18 s; the body then goes on for 20 s more, with
+       no gap of 30 s in it, and is not cut off. */
+    trickle_ms = 500;
+    CHECK(get("https://example.org/t", &r, slow, NULL) == HTTPS_FAILED);
+    trickle_ms = 250;
+    began = clock_us;
+    CHECK(get("https://example.org/u", &r, slow, NULL) == HTTPS_COMPLETE);
+    CHECK(r.status == 200 && r.body_len == 80 && body_len == 80);
+    CHECK(clock_us - began > 30 * 1000000);
+    /* A time limit bounds the whole get: the body is cut once it is up. */
+    https_close_idle();
+    https_set_time_limit(25);
+    began = clock_us;
+    CHECK(get("https://example.org/v", &r, slow, NULL) == HTTPS_TRUNCATED);
+    CHECK(r.status == 200 && r.truncated && r.body_len > 0 && r.body_len < 80);
+    CHECK(clock_us - began < 26 * 1000000);
+    /* Run out before the body, and the get fails. */
+    https_set_time_limit(5);
+    CHECK(get("https://example.org/w", &r, slow, NULL) == HTTPS_FAILED);
+    CHECK(r.status == 0);
+    trickle_ms = 0;
+    https_set_time_limit(0);
+
     /* The same answers cut at random points read the same as whole. */
     static const char *const script[][2] = {
         { "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Encoding: gzip\r\n\r\n\x1f\x8b\x08\x01", NULL },
@@ -199,10 +248,7 @@ int main(void) {
 
 static struct { int unused; } dummy;
 int sceKernelDelayThread(unsigned usec) { return 0; }
-SceInt64 sceKernelGetSystemTimeWide(void) {
-    static SceInt64 now = 1000000;
-    return now += 1000;
-}
+SceInt64 sceKernelGetSystemTimeWide(void) { return clock_us += 1000; }
 SceUID sceKernelCreateThread(const char *name, int (*entry)(SceSize, void *), int priority,
                              int stack, unsigned attr, void *option) {
     return -1;                    /* no roots thread: they load on first use */

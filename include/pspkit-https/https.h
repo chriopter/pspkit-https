@@ -37,6 +37,15 @@ void https_set_accept_gzip(int on);
    second; zero removes the limit. */
 void https_set_rate_limit(unsigned kbps);
 
+/* Worker, between requests: give every https_get this many seconds in all,
+   redirects included; zero, the default, sets no bound. Past it the get stops
+   at its next wait or read: FAILED before the body began, TRUNCATED after.
+   DNS already in progress may take ten seconds to return. Without a limit a
+   get is bounded step by step -- 10 s to connect, 20 s for the handshake,
+   30 s to send the request, 30 s for the whole response head, then 30 s
+   without a byte of body -- so a body that trickles in lasts as long as it is. */
+void https_set_time_limit(unsigned seconds);
+
 /* Worker, between requests: wolfSSL cipher list, or NULL for the default.
    The string is kept, not copied, until replaced. Closes idle connections
    so the next handshake uses the setting. An invalid list fails the request. */

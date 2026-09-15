@@ -75,14 +75,26 @@ static int expired(unsigned start, unsigned budget_ms) {
     return (now_ms() - start) > budget_ms;
 }
 
+/* A bound on a whole get, for a caller that would rather give up than wait
+   out a slow server; zero, the default, leaves only the per-step timeouts. */
+static unsigned g_time_limit_s;
+static unsigned g_get_start;
+void https_set_time_limit(unsigned seconds) { g_time_limit_s = seconds; }
+static int over_time(void) {
+    if (!g_time_limit_s || (now_ms() - g_get_start) / 1000u < g_time_limit_s) return 0;
+    logline("https: time limit of %u s reached", g_time_limit_s);
+    return 1;
+}
+
 #define PORT 443
 #define MAX_REDIRECTS 5
 #define HEAD_MAX (8 * 1024)
 
 #define CONNECT_TIMEOUT_MS   10000
 #define HANDSHAKE_TIMEOUT_MS 20000
-/* Per read, not per body: a 42 MB download over 802.11b takes minutes and
-   must not be cut off for being slow, only for being stuck. */
+/* For the body per read, not per body: a 42 MB download over 802.11b takes
+   minutes and must not be cut off for being slow, only for being stuck. The
+   head is a few hundred bytes and has it in all. */
 #define STALL_TIMEOUT_MS     30000
 
 /* ChaCha20-Poly1305 first: on a core with no AES instructions it moves
@@ -862,8 +874,6 @@ static int one_request(const struct url *u, https_sink sink, void *sink_ctx,
                        struct https_result *res, struct url *redirect, int *stale) {
     int sock = -1, rc, ret = -1;
     WOLFSSL *ssl = NULL;
-    struct connection *conn = take_idle(u);
-    int reused = conn != NULL;
     int can_keep = 0;
     static char buf[16 * 1024];
     static char head[HEAD_MAX + 1];
@@ -876,6 +886,9 @@ static int one_request(const struct url *u, https_sink sink, void *sink_ctx,
     res->content_length = 0;
     res->truncated = 0;
     res->content_encoding[0] = '\0';          /* a redirect's is not the body's */
+    if (over_time()) return -1;               /* before a redirect or a retry */
+    struct connection *conn = take_idle(u);
+    int reused = conn != NULL;
     if (conn) {
         sock = conn->sock;
         ssl = conn->ssl;
@@ -929,6 +942,7 @@ static int one_request(const struct url *u, https_sink sink, void *sink_ctx,
                 goto out;
             }
             if (aborted()) { logline("https: aborted while connecting"); goto out; }
+            if (over_time()) goto out;
             if (expired(start, CONNECT_TIMEOUT_MS)) { logline("connect timeout"); goto out; }
         }
     }
@@ -975,6 +989,7 @@ static int one_request(const struct url *u, https_sink sink, void *sink_ctx,
             goto out;
         }
         if (aborted()) { logline("https: aborted in the handshake"); goto out; }
+        if (over_time()) goto out;
         if (expired(start, HANDSHAKE_TIMEOUT_MS)) { logline("handshake timeout"); goto out; }
         wait_socket(1);
     }
@@ -1020,6 +1035,7 @@ request:
             goto out;
         }
         if (aborted()) { logline("https: aborted while sending"); goto out; }
+        if (over_time()) goto out;
         if (expired(start, STALL_TIMEOUT_MS)) { logline("write timeout"); goto out; }
         wait_socket(1);
     }
@@ -1032,9 +1048,17 @@ request:
     int have_length = 0, chunked = 0;
     start = now_ms();
     for (;;) {
+        /* The head has STALL_TIMEOUT_MS in all from the request: a server
+           that sends it a byte now and then must not hold the request for
+           as long as it likes. The body's clock starts over with each read. */
+        if (expired(start, STALL_TIMEOUT_MS)) {
+            logline(body_start ? "read stalled" : "http: no complete head in time");
+            goto out;
+        }
+        if (over_time()) goto out;
         rc = wolfSSL_read(ssl, buf, (int)sizeof(buf));
         if (rc > 0) {
-            start = now_ms();
+            if (body_start) start = now_ms();
             const char *data = buf;
             size_t len = (size_t)rc;
 
@@ -1133,6 +1157,7 @@ request:
 
                 /* Whatever followed the head in this read is body. */
                 body_start = head + hl;
+                start = now_ms();
                 data = body_start;
                 len = headlen - hl;
                 ret = 1;                                 /* body has begun */
@@ -1192,7 +1217,6 @@ request:
             goto out;
         }
         if (aborted()) { logline("http: aborted while waiting"); goto out; }
-        if (expired(start, STALL_TIMEOUT_MS)) { logline("read stalled"); goto out; }
         wait_socket(1);
     }
 
@@ -1213,6 +1237,7 @@ enum https_outcome https_get(const char *url, https_sink sink, void *sink_ctx,
     memset(&res, 0, sizeof(res));
     if (out) *out = res;                      /* callers log it either way */
     abort_clear();
+    g_get_start = now_ms();
     phase("");
     if (!url || !g_net.connected || strpbrk(g_agent, "\r\n") || url_parse(url, &u) < 0)
         return HTTPS_FAILED;
