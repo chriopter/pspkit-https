@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3
+
+- `https_net_init()` initializes the network stack for the PSP system connection dialog. Requests adopt that connection without silently selecting profile 1 after cancellation.
+- Explicit non-blocking sockets keep receive timeouts and cancellation reachable when WLAN drops. Failed socket configuration rejects the connection.
+- Progress callbacks continue during response waits, allowing cancellation even when no new bytes arrive.
+- Scripted request tests cover stalled responses, cancellation and socket setup failures.
+
 ## 0.2.2
 
 - A response head has 30 seconds in all from the request. The 30-second stall timeout started over with every byte, so a server sending a byte a second held a request without end

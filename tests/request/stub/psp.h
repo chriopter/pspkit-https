@@ -33,6 +33,9 @@ int sceNetTerm(void);
 int sceNetInetInit(void);
 int sceNetInetTerm(void);
 int sceNetInetSocket(int domain, int type, int protocol);
+/* PSP-only option absent from the host socket headers. */
+#define SO_NONBLOCK 0x1009
+int sceNetInetSetsockopt(int s, int level, int option, const void *value, socklen_t len);
 int sceNetInetConnect(int s, const struct sockaddr *addr, socklen_t len);
 size_t sceNetInetRecv(int s, void *buf, size_t len, int flags);
 size_t sceNetInetSend(int s, const void *buf, size_t len, int flags);

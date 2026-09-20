@@ -56,6 +56,11 @@ void https_set_cipher_suites(const char *suites);
    parsing in the background. Clears a previous abort when the call starts. */
 int https_net_connect(void);
 
+/* With no network worker running: initialise the stack for a native
+   connection dialog. Once used, connect() only adopts an established link;
+   it never selects a profile or reconnects after cancellation. */
+int https_net_init(void);
+
 /* Worker, with no request running: join roots parsing, close connections
    and release TLS and network resources. Repeated calls are harmless. */
 void https_net_disconnect(void);
@@ -65,8 +70,10 @@ void https_net_disconnect(void);
    sink discards the body. Callbacks may call https_abort. */
 typedef int (*https_sink)(void *ctx, const void *data, size_t len);
 
-/* Called on the request worker after headers and accepted body pieces.
-   total is zero for an unknown or empty body. A NULL callback is allowed. */
+/* Called on the request worker after headers and accepted body pieces, and
+   periodically while waiting for the response (done may stay unchanged).
+   total is zero before headers or for an unknown/empty body. The callback
+   may call https_abort; a NULL callback is allowed. */
 typedef void (*https_progress)(void *ctx, size_t done, size_t total);
 
 struct https_result {

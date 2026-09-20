@@ -3,10 +3,9 @@
  * to stream one body of any size into a sink. Short-lived connections are
  * reused per host when the response has an unambiguous Content-Length.
  *
- * The four traps in this file each cost an afternoon and none is documented:
- * the BSD socket wrappers return garbage, sceNetInetSelect hangs, SO_NONBLOCK
- * and SO_ERROR do not exist in the headers, and retrying EINTR inside an IO
- * callback spins forever inside the handshake.
+ * Use sceNetInet directly and explicitly enable non-blocking sockets. Poll
+ * instead of relying on sceNetInetSelect; retry EINTR in the caller so its
+ * deadlines and cancellation remain reachable.
  */
 
 #include <pspkernel.h>
@@ -257,6 +256,34 @@ static void wolf_log(const int level, const char *const msg) {
 }
 #endif
 
+static int g_manual_connect;
+
+static int net_init(int stack, int priority) {
+    if (g_net.apctl) return 0;
+    if (sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON) < 0) goto fail;
+    g_net.common_module = 1;
+    if (sceUtilityLoadNetModule(PSP_NET_MODULE_INET) < 0) goto fail;
+    g_net.inet_module = 1;
+    if (sceNetInit(128 * 1024, 42, 4 * 1024, 42, 4 * 1024) < 0) goto fail;
+    g_net.net = 1;
+    if (sceNetInetInit() < 0) goto fail;
+    g_net.inet = 1;
+    if (sceNetResolverInit() < 0) goto fail;
+    g_net.resolver = 1;
+    if (sceNetApctlInit(stack, priority) < 0) goto fail;
+    g_net.apctl = 1;
+    return 0;
+fail:
+    link_down();
+    return -1;
+}
+
+int https_net_init(void) {
+    g_manual_connect = 1;
+    /* Match the SDK netdialog sample's stack size and thread priority. */
+    return net_init(0x8000, 48);
+}
+
 int https_net_connect(void) {
     abort_clear();
 #ifdef DEBUG_WOLFSSL
@@ -265,6 +292,21 @@ int https_net_connect(void) {
 #endif
     /* The roots are parsed while the radio looks for the access point. */
     roots_start();
+
+    /* A native dialog selects the profile; a cancelled dialog must never
+       silently connect to profile 1 from a worker. */
+    if (g_manual_connect) {
+        int state = 0;
+        if (g_net.apctl && sceNetApctlGetState(&state) >= 0 && state == 4) {
+            g_net.connected = 1;
+            phase("");
+            return 0;
+        }
+        close_idle();
+        g_net.connected = 0;
+        phase("");
+        return -1;
+    }
 
     /* Asked again with the link already up -- a retry after the catalog
        failed, not the wifi -- there is nothing to bring up. */
@@ -275,19 +317,7 @@ int https_net_connect(void) {
         link_down();
     }
     phase("wifi");
-    if (sceUtilityLoadNetModule(PSP_NET_MODULE_COMMON) < 0) goto fail;
-    g_net.common_module = 1;
-    if (sceUtilityLoadNetModule(PSP_NET_MODULE_INET) < 0) goto fail;
-    g_net.inet_module = 1;
-
-    if (sceNetInit(128 * 1024, 42, 4 * 1024, 42, 4 * 1024) < 0) goto fail;
-    g_net.net = 1;
-    if (sceNetInetInit() < 0) goto fail;
-    g_net.inet = 1;
-    if (sceNetResolverInit() < 0) goto fail;
-    g_net.resolver = 1;
-    if (sceNetApctlInit(0x1600, 42) < 0) goto fail;
-    g_net.apctl = 1;
+    if (net_init(0x1600, 42) < 0) goto fail;
 
     /* Connection profile 1, the first one configured on the console. */
     phase("access point");
@@ -911,20 +941,23 @@ static int one_request(const struct url *u, https_sink sink, void *sink_ctx,
     if (sock < 0) { logline("socket failed"); ret = -2; goto out; }
     conn->sock = sock;
 
-    /* No portable O_NONBLOCK here, and SO_NONBLOCK / SO_ERROR are not in the
-       headers -- using them picks up constants from elsewhere and configures
-       the wrong option. The stack behaves as non-blocking (recv reports
-       EAGAIN), which is what the IO callbacks are written for. */
+    /* A successful download does not establish non-blocking behaviour: a
+       disconnected radio can leave recv waiting inside sceNet indefinitely.
+       PSPSDK's socket.h supplies the PSP option values (not host constants). */
+    int nonblock = 1;
+    if (sceNetInetSetsockopt(sock, SOL_SOCKET, SO_NONBLOCK,
+                             &nonblock, sizeof(nonblock)) < 0) {
+        logline("socket non-blocking setup failed");
+        goto out;
+    }
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_port = htons(u->port);
     sa.sin_addr = ip;
 
-    /* A non-blocking connect returns at once with EINPROGRESS. With no
-       SO_ERROR and no usable select, the way to learn that it finished is
-       to ask again: the stack answers EALREADY while it is still at it and
-       EISCONN (or 0) once the connection stands. */
+    /* Poll completion without select: the stack answers EALREADY while
+       connecting and EISCONN (or 0) once the connection stands. */
     unsigned start = now_ms();
     if (sceNetInetConnect(sock, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         int e = sceNetInetGetErrno();
@@ -1047,6 +1080,7 @@ request:
     size_t want = 0;
     int have_length = 0, chunked = 0;
     start = now_ms();
+    unsigned progress_at = start;
     for (;;) {
         /* The head has STALL_TIMEOUT_MS in all from the request: a server
            that sends it a byte now and then must not hold the request for
@@ -1056,6 +1090,13 @@ request:
             goto out;
         }
         if (over_time()) goto out;
+        /* The installer's cancel key is sampled by this callback. Keep it
+           reachable when no body bytes arrive, without redrawing every poll. */
+        if (progress && expired(progress_at, 100)) {
+            progress(progress_ctx, res->body_len, want);
+            progress_at = now_ms();
+        }
+        if (aborted()) goto out;
         rc = wolfSSL_read(ssl, buf, (int)sizeof(buf));
         if (rc > 0) {
             if (body_start) start = now_ms();

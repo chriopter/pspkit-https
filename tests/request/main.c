@@ -31,6 +31,8 @@ static size_t body_len;
 static unsigned chunk_seed;          /* nonzero: reads end at random points */
 static unsigned trickle_ms;          /* nonzero: a byte a read, this far apart */
 static int trickle_waiting;
+static int stall_after_answers, fail_nonblock;
+static https_progress request_progress;
 static SceInt64 clock_us = 1000000;  /* the PSP's clock; each look moves it 1 ms */
 
 int wolfSSL_write(WOLFSSL *ssl, const void *data, int size) {
@@ -46,7 +48,10 @@ int wolfSSL_write(WOLFSSL *ssl, const void *data, int size) {
    on a fast link delivers them. Nothing left reads as a clean close. */
 int wolfSSL_read(WOLFSSL *ssl, void *data, int size) {
     const char *a = answer < 4 ? answers[answer] : NULL;
-    if (!a) return 0;
+    if (!a) {
+        if (stall_after_answers) { clock_us += 10000; return -1; }
+        return 0;
+    }
     /* A slow server: nothing yet while the time passes, then one byte. */
     if (trickle_ms && (trickle_waiting = !trickle_waiting)) {
         clock_us += trickle_ms * 1000;
@@ -87,7 +92,17 @@ static enum https_outcome get(const char *url, struct https_result *r, const cha
     answer_at = 0;
     body_len = 0;
     trickle_waiting = 0;
-    return https_get(url, sink, NULL, NULL, NULL, r);
+    return https_get(url, sink, NULL, request_progress, NULL, r);
+}
+
+static size_t last_progress;
+static unsigned progress_polls;
+static void cancel_stalled(void *ctx, size_t done, size_t total) {
+    if (done == 2 && total == 8 && done == last_progress) {
+        progress_polls++;
+        https_abort();
+    }
+    last_progress = done;
 }
 
 static int count(const char *text, const char *needle) {
@@ -205,6 +220,31 @@ int main(void) {
     trickle_ms = 0;
     https_set_time_limit(0);
 
+    /* A peer that stops after a partial body still has a bounded wait. */
+    stall_after_answers = 1;
+    began = clock_us;
+    CHECK(get("https://example.org/stalled", &r,
+              "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nab", NULL) == HTTPS_TRUNCATED);
+    CHECK(r.body_len == 2 && r.truncated);
+    CHECK(clock_us - began >= 30 * 1000000 && clock_us - began < 31 * 1000000);
+    /* The UI's progress callback can cancel even without another byte. */
+    request_progress = cancel_stalled;
+    last_progress = progress_polls = 0;
+    began = clock_us;
+    CHECK(get("https://example.org/cancel-stalled", &r,
+              "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nab", NULL) == HTTPS_TRUNCATED);
+    CHECK(r.body_len == 2 && progress_polls == 1);
+    CHECK(clock_us - began < 1000000);
+    request_progress = NULL;
+    stall_after_answers = 0;
+    /* Never proceed with a socket whose non-blocking setup failed. */
+    https_close_idle();
+    fail_nonblock = 1;
+    CHECK(get("https://example.org/socket-option-fails", &r,
+              "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nab", NULL) == HTTPS_FAILED);
+    CHECK(requests[0] == '\0' && r.body_len == 0);
+    fail_nonblock = 0;
+
     /* The same answers cut at random points read the same as whole. */
     static const char *const script[][2] = {
         { "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Encoding: gzip\r\n\r\n\x1f\x8b\x08\x01", NULL },
@@ -263,6 +303,11 @@ int sceNetTerm(void) { return 0; }
 int sceNetInetInit(void) { return 0; }
 int sceNetInetTerm(void) { return 0; }
 int sceNetInetSocket(int domain, int type, int protocol) { return 3; }
+int sceNetInetSetsockopt(int s, int level, int option, const void *value, socklen_t len) {
+    CHECK(level == SOL_SOCKET && option == SO_NONBLOCK);
+    CHECK(len == sizeof(int) && *(const int *)value == 1);
+    return fail_nonblock ? -1 : 0;
+}
 int sceNetInetConnect(int s, const struct sockaddr *addr, socklen_t len) { return 0; }
 size_t sceNetInetRecv(int s, void *buf, size_t len, int flags) { return (size_t)-1; }
 size_t sceNetInetSend(int s, const void *buf, size_t len, int flags) { return (size_t)-1; }

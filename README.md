@@ -71,6 +71,13 @@ int main(void) {
 }
 ```
 
+For a PSP system connection dialog, call `https_net_init()` on the main
+thread before opening `sceUtilityNetconf`. After the dialog succeeds,
+`https_net_connect()` adopts that connection. Once this mode is selected,
+it never connects to profile 1 automatically, including after cancellation
+or a later disconnect; reopen the dialog to reconnect. Initialize or show
+the dialog only while network workers are stopped.
+
 ## Details
 
 <details>
@@ -79,6 +86,8 @@ int main(void) {
 - ChaCha20-Poly1305 is used first: the PSP has no AES hardware, and 5 MB take 1.3 s with ChaCha against 4.8 s with AES-GCM
 - X25519 for the key exchange, about seven times faster than P-256 on a PSP
 - Redirects are followed (up to 5), but never from `https://` down to `http://`
+- Sockets explicitly enable PSPSDK `SO_NONBLOCK`; timeout checks must remain reachable after a dropped WLAN connection
+- Progress callbacks also run periodically while waiting for response data, with unchanged byte counts, so a UI can still cancel a stalled download
 - Timeouts: 10 s to connect, 20 s for the handshake, 30 s for the whole response head, then 30 s without a byte of body. A slow body is never cut off for being slow, so a big download on 802.11b can finish
 - `https_set_time_limit(seconds)` gives a whole `https_get` a bound, redirects included: `FAILED` if it runs out before the body, `TRUNCATED` after. Off by default
 - Connections to the same server are reused for 30 seconds
