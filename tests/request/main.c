@@ -177,6 +177,11 @@ int main(void) {
     CHECK(get("https://example.org/k", &r, "HTTP/1.1 204 No Content\r\nContent-Length: 10\r\n\r\n",
               NULL) == HTTPS_COMPLETE);
     CHECK(r.content_length == 0 && r.body_len == 0);
+    /* A UTF-8 file name goes out percent-encoded, ASCII as it is. */
+    CHECK(get("https://example.org/a%20b/\xe4\xb8\xad-\xc3\xaf.png?q=1", &r,
+              "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", NULL) == HTTPS_COMPLETE);
+    CHECK(!strncmp(requests, "GET /a%20b/%E4%B8%AD-%C3%AF.png?q=1 HTTP/1.1\r\n", 46));
+
     /* Blanks after a Location are not part of it. */
     CHECK(get("https://example.org/l", &r,
               "HTTP/1.1 302 Found\r\nLocation: https://example.com/m \t\r\nContent-Length: 0\r\n\r\n",

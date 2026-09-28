@@ -548,13 +548,24 @@ static int url_parse(const char *s, struct url *u) {
     for (const unsigned char *p = (const unsigned char *)u->host; *p; p++)
         if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
               (*p >= '0' && *p <= '9') || *p == '.' || *p == '-')) return -1;
-    /* Queries without a slash still target '/', and fragments stay local. */
-    size_t len = strcspn(path, "#");
-    size_t prefix = *path != '/';
-    if (prefix + len >= sizeof(u->path)) return -1;
-    if (prefix) u->path[0] = '/';
-    memcpy(u->path + prefix, path, len);
-    u->path[prefix + len] = '\0';
+    /* Queries without a slash still target '/', and fragments stay local.
+       Bytes past ASCII -- a file name in UTF-8 -- go out percent-encoded,
+       which is what a server takes them as; sent raw, GitHub Pages answers
+       400 and closes the connection. */
+    size_t len = strcspn(path, "#"), n = 0;
+    if (*path != '/') u->path[n++] = '/';
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)path[i];
+        if (n + 4 > sizeof(u->path)) return -1;
+        if (c < 128) u->path[n++] = (char)c;
+        else {
+            static const char hex[] = "0123456789ABCDEF";
+            u->path[n++] = '%';
+            u->path[n++] = hex[c >> 4];
+            u->path[n++] = hex[c & 15];
+        }
+    }
+    u->path[n] = '\0';
     return 0;
 }
 
