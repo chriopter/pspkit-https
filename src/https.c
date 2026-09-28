@@ -113,6 +113,7 @@ static int g_wolf_ready;
    never held across the network. Initialised statically, so there is no
    first call to race. */
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_handshake_lock = PTHREAD_MUTEX_INITIALIZER;
 static WOLFSSL_CTX *roots_ready(void);
 static void roots_start(void);
 static void roots_release(void);
@@ -342,7 +343,7 @@ fail:
 /* The PSP resolver rather than getaddrinfo: newlib's lookup path yields
    "Trying 0.0.0.0" here, so it is not to be trusted. */
 static int resolve(const char *host, struct in_addr *out) {
-    static char buf[1024];
+    char buf[1024];                 /* each caller its own: two may look up at once */
     int rid = -1;
     if (sceNetResolverCreate(&rid, buf, sizeof(buf)) < 0) return -1;
     int rc = sceNetResolverStartNtoA(rid, host, out, 2 * 1000 * 1000, 5);
@@ -824,9 +825,14 @@ static void roots_release(void) {
 /* An application that alternates two hosts -- raw.githubusercontent.com and
    api.github.com, say -- would close the first connection each time it
    reached the second with one idle slot. The lock also protects slots from
-   the screen closing idle connections while a request is active. */
-#define IDLE_SLOTS 3
-#define IDLE_MS 30000
+   the screen closing idle connections while a request is active. Six,
+   because a picture fetched from archive.org lands on a different mirror
+   host each time and would otherwise push out the catalog's connection;
+   a minute, because GitHub Pages keeps an idle connection open for at
+   least seventy seconds, and each one kept saves a handshake of a third
+   of a second on a PSP. */
+#define IDLE_SLOTS 6
+#define IDLE_MS 60000
 struct connection {
     int sock;
     WOLFSSL *ssl;
@@ -899,14 +905,15 @@ static void save_idle(struct connection *c) {
 /* One HTTP request, possibly over an idle connection. Fills head[] and streams
    the body. Returns: 0 complete, 1 truncated, <0 failed before the body.
    On a 3xx with Location, *redirect is filled and 2 is returned. */
-static int one_request(const struct url *u, https_sink sink, void *sink_ctx,
-                       https_progress progress, void *progress_ctx,
-                       struct https_result *res, struct url *redirect, int *stale) {
+#define REQUEST_BUF (16 * 1024)
+static int request_with(const struct url *u, https_sink sink, void *sink_ctx,
+                        https_progress progress, void *progress_ctx,
+                        struct https_result *res, struct url *redirect, int *stale,
+                        char *buf, char *head) {
     int sock = -1, rc, ret = -1;
     WOLFSSL *ssl = NULL;
     int can_keep = 0;
-    static char buf[16 * 1024];
-    static char head[HEAD_MAX + 1];
+    int shaking = 0;                /* holds g_handshake_lock */
     size_t headlen = 0;
 
     *stale = 0;
@@ -1011,6 +1018,11 @@ static int one_request(const struct url *u, https_sink sink, void *sink_ctx,
         logline("x25519 key share unavailable");
 
     phase("tls handshake");
+    /* One handshake at a time: the certificate check reads the host it is
+       for from g_verify_host. A handshake is a third of a second; the data
+       after it goes on in parallel. */
+    pthread_mutex_lock(&g_handshake_lock);
+    shaking = 1;
     snprintf(g_verify_host, sizeof(g_verify_host), "%s", u->host);
     start = now_ms();
     while ((rc = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
@@ -1027,6 +1039,8 @@ static int one_request(const struct url *u, https_sink sink, void *sink_ctx,
         wait_socket(1);
     }
     res->handshake_ms = now_ms() - start;
+    pthread_mutex_unlock(&g_handshake_lock);
+    shaking = 0;
     {
         const char *group = wolfSSL_get_curve_name(ssl);
         const char *cipher = wolfSSL_get_cipher(ssl);
@@ -1048,14 +1062,14 @@ request:
     char authority[140];
     if (u->port == PORT) snprintf(authority, sizeof(authority), "%s", u->host);
     else snprintf(authority, sizeof(authority), "%s:%u", u->host, u->port);
-    int reqlen = snprintf(buf, sizeof(buf),
+    int reqlen = snprintf(buf, REQUEST_BUF,
                           "GET %s HTTP/1.1\r\n"
                           "Host: %s\r\n"
                           "User-Agent: %s\r\n"
                           "%s"
                           "Connection: keep-alive\r\n\r\n", u->path, authority, g_agent,
                           g_accept_gzip ? "Accept-Encoding: gzip\r\n" : "");
-    if (reqlen <= 0 || reqlen >= (int)sizeof(buf)) { logline("request too long"); goto out; }
+    if (reqlen <= 0 || reqlen >= REQUEST_BUF) { logline("request too long"); goto out; }
 
     start = now_ms();
     for (int sent = 0; sent < reqlen; ) {
@@ -1097,7 +1111,7 @@ request:
             progress_at = now_ms();
         }
         if (aborted()) goto out;
-        rc = wolfSSL_read(ssl, buf, (int)sizeof(buf));
+        rc = wolfSSL_read(ssl, buf, REQUEST_BUF);
         if (rc > 0) {
             if (body_start) start = now_ms();
             const char *data = buf;
@@ -1262,12 +1276,29 @@ request:
     }
 
 out:
+    if (shaking) pthread_mutex_unlock(&g_handshake_lock);
     if (ret == 1) res->truncated = 1;
     if (reused && ret < 0 && !res->body_len && !headlen)
         *stale = 1;
     if (ret == 0 && can_keep) save_idle(conn);
     else close_connection(conn, ret == 0 || ret == 2);
     return ret;
+}
+
+/* The buffers are the request's own: two threads fetching at once each
+   read into their own. */
+static int one_request(const struct url *u, https_sink sink, void *sink_ctx,
+                       https_progress progress, void *progress_ctx,
+                       struct https_result *res, struct url *redirect, int *stale) {
+    char *mem = malloc(REQUEST_BUF + HEAD_MAX + 1);
+    if (!mem) {
+        *stale = 0;
+        return -1;
+    }
+    int rc = request_with(u, sink, sink_ctx, progress, progress_ctx, res, redirect, stale, mem,
+                          mem + REQUEST_BUF);
+    free(mem);
+    return rc;
 }
 
 enum https_outcome https_get(const char *url, https_sink sink, void *sink_ctx,
