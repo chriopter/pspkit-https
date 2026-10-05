@@ -5,6 +5,7 @@
 - Requests may run on two threads at once: the request and head buffers are per request, one TLS handshake runs at a time, and transfers run in parallel
 - Six idle connections are kept for sixty seconds
 - Non-ASCII bytes in a URL path go out percent-encoded
+- Mozilla's roots as of Fri Sep 25 03:12:01 2026 GMT, the same roots as before
 
 ## 0.2.3
 
