@@ -100,7 +100,7 @@ the dialog only while network workers are stopped.
 <details>
 <summary><b>Certificates</b> · roots, dates, asking the player</summary>
 
-- 121 root certificates from Mozilla, taken from curl; a workflow checks for a newer list every Monday and releases it as the next patch version
+- 121 root certificates from Mozilla, taken from curl; a workflow checks for a newer list every Monday and, when the roots changed, releases it as the next patch version
 - Server name and certificate chain are always checked; a forged signature or the wrong name always fails
 - **Dates:** a PSP's clock resets to 2000 when the battery runs flat. So a certificate only counts as expired if it had already expired on the day the library was built. Anything that expired later still passes; only updating the app closes that gap
 - Why not ask the internet for the time? A hostile Wi-Fi can fake the answer, and setting the PSP's clock needs a kernel module

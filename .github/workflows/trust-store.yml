@@ -2,11 +2,12 @@ name: Trust store
 
 # Once a week: Mozilla's roots as curl publishes them, checked against
 # curl's hash by ca/update. When they changed, the new ca/cacert.pem and
-# src/ca_bundle.h go into one pull request on the branch ca-update, with a
-# line in CHANGELOG.md under the next patch version. The pull request is
-# checked, squashed into the default branch, tagged and released, all here.
-# One that drops more than a handful of roots stays open for a person, and
-# is refreshed while it does.
+# src/ca_bundle.h go into one pull request on the branch ca-update, which
+# is checked and squashed into the default branch here. When the roots
+# themselves changed, and not only the date above them, it also carries a
+# line in CHANGELOG.md under the next patch version and is tagged and
+# released. One that drops more than a handful of roots stays open for a
+# person, and is refreshed while it does.
 on:
   schedule:
     - cron: "17 5 * * 1"
@@ -34,12 +35,20 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+          # The header without its comment is the roots and nothing else.
+          git show HEAD:src/ca_bundle.h | sed '1,/\*\//d' > "$RUNNER_TEMP/before.h"
+          sed '1,/\*\//d' src/ca_bundle.h > "$RUNNER_TEMP/after.h"
+          if cmp -s "$RUNNER_TEMP/before.h" "$RUNNER_TEMP/after.h"; then
+            echo "roots=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "roots=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # The version after the newest tag, unless CHANGELOG.md already opens
       # with one that has no tag yet: then the line joins that section.
       - name: Note it in the changelog
         id: version
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outputs.roots == 'true'
         run: |
           dated=$(sed -n 's/^## Certificate data from Mozilla as of: //p' ca/cacert.pem)
           last=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
@@ -54,10 +63,9 @@ jobs:
           line="Mozilla's roots as of $dated"
           [ -z "$came" ] || line="$line. Added: $came"
           [ -z "$went" ] || line="$line. Removed: $went"
-          [ -n "$came$went" ] || line="$line, the same roots as before"
+          [ -n "$came$went" ] || line="$line, some reissued under the same names"
           python3 ca/changelog "$next" "$line"
           echo "next=$next" >> "$GITHUB_OUTPUT"
-          echo "dated=$dated" >> "$GITHUB_OUTPUT"
 
       # Every root has to parse, the table has to end where its offsets say,
       # and the library's own tests have to pass on what will be released.
@@ -79,20 +87,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.repository.default_branch }}
           NEXT: ${{ steps.version.outputs.next }}
-          DATED: ${{ steps.version.outputs.dated }}
         run: |
+          dated=$(sed -n 's/^## Certificate data from Mozilla as of: //p' ca/cacert.pem)
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C ca-update
           git add ca/cacert.pem ca/cacert.pem.sha256 src/ca_bundle.h CHANGELOG.md
-          git commit -q -m "Take Mozilla's roots as of $DATED" -m "$(cat "$RUNNER_TEMP/update.txt")"
+          git commit -q -m "Take Mozilla's roots as of $dated" -m "$(cat "$RUNNER_TEMP/update.txt")"
           git push --force origin ca-update
 
           # More than five roots gone at once, or fewer than a hundred left,
           # is not a week's ordinary change: a person looks at that one.
           gone=$(grep -c '^  - ' "$RUNNER_TEMP/update.txt" || true)
           count=$(sed -n 's/^#define PSPKIT_HTTPS_CA_COUNT //p' src/ca_bundle.h)
-          if [ "$gone" -le 5 ] && [ "$count" -ge 100 ]; then
+          if [ -z "$NEXT" ]; then
+            merge=true
+            fate="The roots are the ones already there and only the date moved, so it is merged by the workflow that opened it and nothing is released."
+          elif [ "$gone" -le 5 ] && [ "$count" -ge 100 ]; then
             merge=true
             fate="It passed the checks and is merged and released as $NEXT by the workflow that opened it."
           else
@@ -100,6 +111,7 @@ jobs:
             fate="It drops $gone roots and leaves $count, so it waits for a person: squash and merge, then tag v$NEXT."
           fi
           echo "merge=$merge" >> "$GITHUB_OUTPUT"
+          echo "dated=$dated" >> "$GITHUB_OUTPUT"
 
           {
             echo "Mozilla's root store changed; this is the weekly check."
@@ -113,27 +125,28 @@ jobs:
 
           open=$(gh pr list --head ca-update --state open --json number --jq '.[0].number')
           if [ -n "$open" ]; then
-            gh pr edit "$open" --title "Trust store: Mozilla as of $DATED" --body-file "$RUNNER_TEMP/body.md"
+            gh pr edit "$open" --title "Trust store: Mozilla as of $dated" --body-file "$RUNNER_TEMP/body.md"
           else
             gh pr create --base "$BASE" --head ca-update \
-              --title "Trust store: Mozilla as of $DATED" --body-file "$RUNNER_TEMP/body.md"
+              --title "Trust store: Mozilla as of $dated" --body-file "$RUNNER_TEMP/body.md"
           fi
 
       # Squashed by GitHub, so the commit carries GitHub's signature. A tag
       # this token pushes starts no workflow, so the release is started by
       # name, on the tag.
-      - name: Merge, tag and release
+      - name: Merge, and tag and release new roots
         if: steps.pr.outputs.merge == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT: ${{ steps.version.outputs.next }}
-          DATED: ${{ steps.version.outputs.dated }}
+          DATED: ${{ steps.pr.outputs.dated }}
         run: |
           gh pr merge ca-update --squash \
             --subject "Take Mozilla's roots as of $DATED" \
             --body "$(cat "$RUNNER_TEMP/update.txt")"
           commit=$(gh pr view ca-update --json mergeCommit --jq '.mergeCommit.oid')
           git push origin --delete ca-update
+          [ -n "$NEXT" ] || exit 0
           git fetch -q origin "$commit"
           git tag -a "v$NEXT" -m "pspkit-https $NEXT" "$commit"
           git push origin "v$NEXT"
