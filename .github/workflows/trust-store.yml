@@ -2,9 +2,11 @@ name: Trust store
 
 # Once a week: Mozilla's roots as curl publishes them, checked against
 # curl's hash by ca/update. When they changed, the new ca/cacert.pem and
-# src/ca_bundle.h go into one pull request on the branch ca-update, opened
-# the first time and refreshed while it stays open, so a quiet month does
-# not pile up four of them.
+# src/ca_bundle.h go into one pull request on the branch ca-update, with a
+# line in CHANGELOG.md under the next patch version. The pull request is
+# checked, squashed into the default branch, tagged and released, all here.
+# One that drops more than a handful of roots stays open for a person, and
+# is refreshed while it does.
 on:
   schedule:
     - cron: "17 5 * * 1"
@@ -13,12 +15,15 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Fetch and regenerate
         id: update
@@ -30,19 +35,71 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # The version after the newest tag, unless CHANGELOG.md already opens
+      # with one that has no tag yet: then the line joins that section.
+      - name: Note it in the changelog
+        id: version
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          dated=$(sed -n 's/^## Certificate data from Mozilla as of: //p' ca/cacert.pem)
+          last=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          top=$(sed -n 's/^## //p' CHANGELOG.md | head -n 1)
+          if [ "v$top" = "$last" ]; then
+            next="${top%.*}.$((${top##*.} + 1))"
+          else
+            next="$top"
+          fi
+          came=$(sed -n 's/^  + //p' "$RUNNER_TEMP/update.txt" | paste -sd ';' | sed 's/;/; /g')
+          went=$(sed -n 's/^  - //p' "$RUNNER_TEMP/update.txt" | paste -sd ';' | sed 's/;/; /g')
+          line="Mozilla's roots as of $dated"
+          [ -z "$came" ] || line="$line. Added: $came"
+          [ -z "$went" ] || line="$line. Removed: $went"
+          [ -n "$came$went" ] || line="$line, the same roots as before"
+          python3 ca/changelog "$next" "$line"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "dated=$dated" >> "$GITHUB_OUTPUT"
+
+      # Every root has to parse, the table has to end where its offsets say,
+      # and the library's own tests have to pass on what will be released.
+      - name: Check the new store
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          count=$(sed -n 's/^#define PSPKIT_HTTPS_CA_COUNT //p' src/ca_bundle.h)
+          parsed=$(openssl crl2pkcs7 -nocrl -certfile ca/cacert.pem | openssl pkcs7 -print_certs -noout | grep -c '^subject=')
+          [ "$count" = "$parsed" ] || { echo "$count roots in the header, $parsed that openssl parses" >&2; exit 1; }
+          printf '#include "ca_bundle.h"\nint main(void) { return sizeof PSPKIT_HTTPS_CA_DER != PSPKIT_HTTPS_CA_OFFSETS[PSPKIT_HTTPS_CA_COUNT]; }\n' > "$RUNNER_TEMP/table.c"
+          cc -Wall -Werror -Isrc "$RUNNER_TEMP/table.c" -o "$RUNNER_TEMP/table"
+          "$RUNNER_TEMP/table"
+          sh tests/request/run
+
       - name: Open or refresh the pull request
+        id: pr
         if: steps.update.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.repository.default_branch }}
+          NEXT: ${{ steps.version.outputs.next }}
+          DATED: ${{ steps.version.outputs.dated }}
         run: |
-          dated=$(sed -n 's/^## Certificate data from Mozilla as of: //p' ca/cacert.pem)
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C ca-update
-          git add ca/cacert.pem ca/cacert.pem.sha256 src/ca_bundle.h
-          git commit -q -m "Take Mozilla's roots as of $dated" -m "$(cat "$RUNNER_TEMP/update.txt")"
+          git add ca/cacert.pem ca/cacert.pem.sha256 src/ca_bundle.h CHANGELOG.md
+          git commit -q -m "Take Mozilla's roots as of $DATED" -m "$(cat "$RUNNER_TEMP/update.txt")"
           git push --force origin ca-update
+
+          # More than five roots gone at once, or fewer than a hundred left,
+          # is not a week's ordinary change: a person looks at that one.
+          gone=$(grep -c '^  - ' "$RUNNER_TEMP/update.txt" || true)
+          count=$(sed -n 's/^#define PSPKIT_HTTPS_CA_COUNT //p' src/ca_bundle.h)
+          if [ "$gone" -le 5 ] && [ "$count" -ge 100 ]; then
+            merge=true
+            fate="It passed the checks and is merged and released as $NEXT by the workflow that opened it."
+          else
+            merge=false
+            fate="It drops $gone roots and leaves $count, so it waits for a person: squash and merge, then tag v$NEXT."
+          fi
+          echo "merge=$merge" >> "$GITHUB_OUTPUT"
 
           {
             echo "Mozilla's root store changed; this is the weekly check."
@@ -51,13 +108,33 @@ jobs:
             cat "$RUNNER_TEMP/update.txt"
             echo '```'
             echo
-            echo "The file matched the SHA-256 curl publishes beside it. Squash and merge, so the commit on $BASE carries GitHub's signature; then bump the submodule in the applications that use the library."
+            echo "The file matched the SHA-256 curl publishes beside it. $fate"
           } > "$RUNNER_TEMP/body.md"
 
           open=$(gh pr list --head ca-update --state open --json number --jq '.[0].number')
           if [ -n "$open" ]; then
-            gh pr edit "$open" --title "Trust store: Mozilla as of $dated" --body-file "$RUNNER_TEMP/body.md"
+            gh pr edit "$open" --title "Trust store: Mozilla as of $DATED" --body-file "$RUNNER_TEMP/body.md"
           else
             gh pr create --base "$BASE" --head ca-update \
-              --title "Trust store: Mozilla as of $dated" --body-file "$RUNNER_TEMP/body.md"
+              --title "Trust store: Mozilla as of $DATED" --body-file "$RUNNER_TEMP/body.md"
           fi
+
+      # Squashed by GitHub, so the commit carries GitHub's signature. A tag
+      # this token pushes starts no workflow, so the release is started by
+      # name, on the tag.
+      - name: Merge, tag and release
+        if: steps.pr.outputs.merge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ steps.version.outputs.next }}
+          DATED: ${{ steps.version.outputs.dated }}
+        run: |
+          gh pr merge ca-update --squash \
+            --subject "Take Mozilla's roots as of $DATED" \
+            --body "$(cat "$RUNNER_TEMP/update.txt")"
+          commit=$(gh pr view ca-update --json mergeCommit --jq '.mergeCommit.oid')
+          git push origin --delete ca-update
+          git fetch -q origin "$commit"
+          git tag -a "v$NEXT" -m "pspkit-https $NEXT" "$commit"
+          git push origin "v$NEXT"
+          gh workflow run release.yml --ref "v$NEXT"

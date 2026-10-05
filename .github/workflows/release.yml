@@ -2,10 +2,13 @@ name: Release
 
 # A tag v* builds the release zip in the pspdev container, checks that the
 # demo links against it, and publishes it on a GitHub release of that tag,
-# with the tag's section of CHANGELOG.md as its notes.
+# with the tag's section of CHANGELOG.md as its notes. The trust store
+# workflow starts it by name on the tag it made, since a tag pushed from a
+# workflow starts nothing.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write

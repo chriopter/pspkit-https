@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.4
+
+- Requests may run on two threads at once: the request and head buffers are per request, one TLS handshake runs at a time, and transfers run in parallel
+- Six idle connections are kept for sixty seconds
+- Non-ASCII bytes in a URL path go out percent-encoded
+
 ## 0.2.3
 
 - `https_net_init()` initializes the network stack for the PSP system connection dialog. Requests adopt that connection without silently selecting profile 1 after cancellation.

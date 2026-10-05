@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Writes one line into CHANGELOG.md under a version.
+
+When the newest section is that version already, the line joins it; otherwise
+the version gets a section of its own on top. The trust store workflow calls
+it for the release that carries a new root store.
+
+    ca/changelog 0.2.4 "Mozilla's roots as of ..."
+"""
+
+import re
+import sys
+from pathlib import Path
+
+if len(sys.argv) != 3:
+    sys.exit("usage: ca/changelog VERSION LINE")
+version, line = sys.argv[1:]
+path = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+
+head, *sections = re.split(r"(?m)^(?=## )", path.read_text())
+if sections and sections[0].startswith(f"## {version}\n"):
+    sections[0] = sections[0].rstrip("\n") + f"\n- {line}\n\n"
+else:
+    sections.insert(0, f"## {version}\n\n- {line}\n\n")
+path.write_text((head + "".join(sections)).rstrip("\n") + "\n")
