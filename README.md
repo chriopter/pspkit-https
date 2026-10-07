@@ -103,6 +103,7 @@ the dialog only while network workers are stopped.
 - 121 root certificates from Mozilla, taken from curl; a workflow checks for a newer list every Monday and, when the roots changed, releases it as the next patch version
 - Server name and certificate chain are always checked; a forged signature or the wrong name always fails
 - **Dates:** a PSP's clock resets to 2000 when the battery runs flat. So a certificate only counts as expired if it had already expired on the day the library was built. Anything that expired later still passes; only updating the app closes that gap
+- wolfSSL is never shown the console's clock: its date is the build day, its timers count from boot. A clock that was never set reads as 0, and a connection must not fail on that
 - Why not ask the internet for the time? A hostile Wi-Fi can fake the answer, and setting the PSP's clock needs a kernel module
 - **Asking the player:** after a refused connection, `https_doubt_take()` tells you the server and why (expired or unknown issuer); if the player agrees, call `https_doubt_accept()` and try again
 
@@ -163,6 +164,7 @@ wolfSSL again when its version changed.
 | `demo/run` | Builds the demo and starts it in PPSSPP (`--fresh` starts with a sweep) |
 | `tests/nettest/run` | Measures download speed over a local connection |
 | `tests/request/run` | Checks the request and the response head on the PC, against a scripted server |
+| `tests/clock/run` | Checks, with wolfSSL built for the PC, that a clock reading 0 stops no connection |
 | `ca/update` | Fetches the newest root certificates |
 | `tools/entropy-sim` | Tests the seed counting against lazy input on the PC |
 

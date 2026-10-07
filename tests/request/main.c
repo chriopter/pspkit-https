@@ -6,10 +6,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "pspkit-https/https.h"
 #include "psp.h"
 #include "wolfssl/ssl.h"
+
+/* What wolfSSL is built to ask for the time, in place of the clock. */
+long long pspkit_https_time(void);
+long long TimeNowInMilliseconds(void);
+unsigned int LowResTimer(void);
 
 static int failures;
 #define CHECK(c)                                                                 \
@@ -283,6 +289,20 @@ int main(void) {
         }
         chunk_seed = 0;
     }
+
+    /* wolfSSL's clock comes from src/https.c and not from the console. A
+       zero for the milliseconds is what ended every connection that got a
+       session ticket on a PSP with no date set; there is none now, not even
+       in the first millisecond after boot, and the time only moves forward.
+       The date is the build day plus the time since boot. */
+    clock_us = -1000;                         /* the next look is the boot */
+    CHECK(TimeNowInMilliseconds() == 1);
+    CHECK(TimeNowInMilliseconds() == 2);
+    clock_us = 90 * 1000000 - 1000;
+    long long date = pspkit_https_time();
+    CHECK(date % 86400 == 90);
+    CHECK(llabs(date - (long long)time(NULL)) < 2 * 86400);
+    CHECK(LowResTimer() == (unsigned)date);
 
     https_net_disconnect();
     printf("request: %s\n", failures ? "FAILED" : "ok");

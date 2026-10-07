@@ -44,6 +44,19 @@
 #                    alt-name matcher, which wants a struct sockaddr_in6 the
 #                    PSP headers do not have.
 #
+#   USER_TICKS       wolfSSL keeps time three ways: time() for dates,
+#   and XTIME        LowResTimer() for a session's age, TimeNowInMilliseconds()
+#                    for a TLS 1.3 ticket's. All three read the console's
+#                    clock, and a PSP whose battery ran flat has none: the
+#                    milliseconds come back as 0, wolfSSL takes that for a
+#                    failed gettimeofday() and ends the connection with
+#                    GETTIME_ERROR (-337) at the first session ticket -- which
+#                    raw.githubusercontent.com sends and GitHub Pages does not.
+#                    USER_TICKS leaves the two timers to src/https.c, and
+#                    src/wolfssl_seed.h points XTIME there as well, so that
+#                    nothing in the library depends on the clock at all. The
+#                    check at the end of this script holds it to that.
+#
 #   CURVE25519 &c.   X25519 costs a fraction of P-256 on a core with no crypto
 #                    hardware -- five key exchanges, 154 ms against 1032 ms.
 #                    Ed25519 is for signatures, ChaCha20-Poly1305 for bulk
@@ -61,7 +74,7 @@ WORK="$KIT/build/wolfssl-cmake"
 
 # The departures above, as the compiler sees them. One list, because the
 # application has to be shown the same one: see the end of this script.
-DEFS="NO_WRITEV NO_DEV_RANDOM WOLFSSL_USER_IO SP_INT_BITS=4096 WOLFSSL_ALT_CERT_CHAINS CUSTOM_RAND_GENERATE_SEED=pspkit_https_seed"
+DEFS="NO_WRITEV NO_DEV_RANDOM WOLFSSL_USER_IO SP_INT_BITS=4096 WOLFSSL_ALT_CERT_CHAINS CUSTOM_RAND_GENERATE_SEED=pspkit_https_seed USER_TICKS"
 CFLAGS="${EXTRA_CFLAGS:-} -include $KIT/src/wolfssl_seed.h"
 for d in $DEFS; do CFLAGS="$CFLAGS -D$d"; done
 
@@ -96,7 +109,12 @@ awk -v frag="$FRAG" '
 	END { for (i = 1; i <= NR; i++) { if (i == last) print frag; print line[i] } }
 ' "$OPTS" >"$OPTS.tmp" && mv "$OPTS.tmp" "$OPTS"
 
-for d in WOLFSSL_TLS13 HAVE_CURVE25519 HAVE_ED25519 HAVE_CHACHA WOLFSSL_ALT_CERT_CHAINS SP_INT_BITS WOLFSSL_USER_IO; do
+for d in WOLFSSL_TLS13 HAVE_CURVE25519 HAVE_ED25519 HAVE_CHACHA WOLFSSL_ALT_CERT_CHAINS SP_INT_BITS WOLFSSL_USER_IO USER_TICKS; do
 	grep -qE "^#define $d" "$OPTS" && echo "  on   $d" || { echo "  OFF  $d" >&2; exit 1; }
 done
+# No way to the console's clock may be left in the library, or a connection
+# can fail on a PSP whose date is not set.
+CLOCK="$(psp-nm -u "$OUT/lib/libwolfssl.a" | awk '$2 ~ /^(time|gettimeofday|clock_gettime|sceRtc.*)$/ { print $2 }' | sort -u | tr '\n' ' ')"
+[ -z "$CLOCK" ] || { echo "  libwolfssl.a still reads the clock: $CLOCK" >&2; exit 1; }
+echo "  on   no clock"
 echo "wolfSSL $(git -C "$SRC" describe --tags 2>/dev/null || echo '?') -> build/wolfssl"

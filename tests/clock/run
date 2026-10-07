@@ -1,0 +1,46 @@
+#!/bin/sh
+# wolfSSL with the options of tools/build-wolfssl, built for the PC, against
+# an OpenSSL server that sends session tickets -- with a clock that reads 0,
+# as a PSP's does once its battery ran flat. The answer has to arrive whole,
+# and wolfSSL must not have looked at the clock at all. Needs Docker; the
+# container fetches a compiler, cmake and OpenSSL, and builds wolfSSL once
+# more, so it takes a minute or two.
+#
+#   tests/clock/run
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+KIT="$(cd "$HERE/../.." && pwd)"
+[ -f "$KIT/wolfssl/CMakeLists.txt" ] || {
+	echo "wolfssl/ is empty: git submodule update --init" >&2
+	exit 1
+}
+# The same list the PSP build takes, read from its script.
+DEFS="$(sed -n 's/^DEFS="\(.*\)"$/\1/p' "$KIT/tools/build-wolfssl")"
+[ -n "$DEFS" ] || { echo "no DEFS in tools/build-wolfssl" >&2; exit 1; }
+
+docker run --rm -i -e DEFS="$DEFS" -v "$KIT:/src:ro" alpine:3 sh -s <<'SH'
+set -e
+apk add --no-cache build-base cmake openssl >/dev/null
+W=/tmp/clock
+mkdir -p $W && cd $W
+CFLAGS="-include /src/src/wolfssl_seed.h"
+for d in $DEFS; do CFLAGS="$CFLAGS -D$d"; done
+CFLAGS="$CFLAGS" cmake -Wno-dev -S /src/wolfssl -B $W/build \
+	-DCMAKE_INSTALL_PREFIX=$W/wolfssl \
+	-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+	-DWOLFSSL_CRYPT_TESTS=OFF -DWOLFSSL_EXAMPLES=OFF \
+	-DWOLFSSL_CURL=ON \
+	-DWOLFSSL_CURVE25519=yes -DWOLFSSL_ED25519=yes \
+	-DWOLFSSL_CHACHA=yes -DWOLFSSL_POLY1305=yes \
+	-DWARNING_C_FLAGS=-w >/dev/null
+cmake --build $W/build -j"$(nproc)" >/dev/null
+cmake --install $W/build >/dev/null
+cc -O1 -Wall -Wextra -Wno-unused-parameter -I$W/wolfssl/include \
+	/src/tests/clock/main.c $W/wolfssl/lib/libwolfssl.a -lm -lpthread -o $W/clock
+
+openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out ca.pem -days 2 \
+	-subj /CN=127.0.0.1 -addext "subjectAltName=IP:127.0.0.1" 2>/dev/null
+openssl s_server -accept 8443 -cert ca.pem -key key.pem -tls1_3 -www -quiet >/dev/null 2>&1 &
+sleep 1
+$W/clock ca.pem 8443
+SH

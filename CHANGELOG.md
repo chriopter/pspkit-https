@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5
+
+- A console whose clock is not set downloads like any other. wolfSSL read a time of 0 as a failed clock and ended the connection with `GETTIME_ERROR` (-337) at the first TLS 1.3 session ticket, so every request to a server that sends tickets, `raw.githubusercontent.com` among them, failed after the handshake
+- wolfSSL no longer reads the console's clock at all: its timers count from boot, and its date is the build day. `tools/build-wolfssl` refuses a library that still refers to `time` or `gettimeofday`. Build wolfSSL again when updating
+- `tests/clock`: wolfSSL with the PSP's options against a server that sends session tickets, on a clock that reads 0
+
 ## 0.2.4
 
 - Requests may run on two threads at once: the request and head buffers are per request, one TLS handshake runs at a time, and transfers run in parallel

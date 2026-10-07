@@ -611,6 +611,26 @@ static long build_day(void) {
     return atol(d + 7) * 10000 + mon * 100 + day;
 }
 
+/* wolfSSL's clock. It never reads the console's: tools/build-wolfssl builds
+   it with USER_TICKS and an XTIME that end here, so no part of a connection
+   can depend on a date the battery forgot. Read as zero -- an RTC that was
+   never set does -- the old millisecond clock made wolfSSL drop the connection
+   with GETTIME_ERROR (-337) on the first TLS 1.3 session ticket, which GitHub's
+   raw host sends before any body. Time since boot always moves and is all a
+   ticket's age needs; the date starts over at the build day with every boot,
+   the same day certificates are held against below. The names and types of
+   the last two are wolfSSL's own, from its internal.h. */
+long long pspkit_https_time(void) {
+    long ymd = build_day(), y = ymd / 10000, m = ymd / 100 % 100, d = ymd % 100;
+    y -= m <= 2;                              /* days since 1970, by civil date */
+    long yoe = y % 400, doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    long long days = y / 400 * 146097LL + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+    return days * 86400 + sceKernelGetSystemTimeWide() / 1000000;
+}
+unsigned int LowResTimer(void) { return (unsigned int)pspkit_https_time(); }
+/* One more than the milliseconds since boot: zero is wolfSSL's "no clock". */
+long long TimeNowInMilliseconds(void) { return sceKernelGetSystemTimeWide() / 1000 + 1; }
+
 /* True when the certificate's notAfter lies before the build: it had run out
    before this client existed, and no clock can make it current again. An
    unreadable date counts as run out -- the waiver below is for a clock the
