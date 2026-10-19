@@ -1,0 +1,30 @@
+#!/bin/sh
+# Real TLS certificate chains, including Archive.org's serial-zero root,
+# against wolfSSL built with the PSP's options. Also refuses forged chains,
+# unknown issuers and mismatched hostnames. Docker only; no public server.
+set -eu
+HERE="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+KIT="$(CDPATH= cd -- "$HERE/../.." && pwd)"
+DEFS="$(sed -n 's/^DEFS="\(.*\)"$/\1/p' "$KIT/tools/build-wolfssl")"
+[ -n "$DEFS" ] || { echo 'no DEFS in tools/build-wolfssl' >&2; exit 1; }
+docker run --rm -i -e DEFS="$DEFS" -v "$KIT:/src:ro" alpine:3 sh -s <<'SH'
+set -eu
+apk add --no-cache build-base cmake openssl python3 >/dev/null
+W=/tmp/certificates
+mkdir -p "$W"
+CFLAGS="-include /src/src/wolfssl_seed.h"
+for d in $DEFS; do CFLAGS="$CFLAGS -D$d"; done
+CFLAGS="$CFLAGS" cmake -Wno-dev -S /src/wolfssl -B "$W/build" \
+    -DCMAKE_INSTALL_PREFIX="$W/wolfssl" \
+    -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+    -DWOLFSSL_CRYPT_TESTS=OFF -DWOLFSSL_EXAMPLES=OFF \
+    -DWOLFSSL_CURL=ON \
+    -DWOLFSSL_CURVE25519=yes -DWOLFSSL_ED25519=yes \
+    -DWOLFSSL_CHACHA=yes -DWOLFSSL_POLY1305=yes \
+    -DWARNING_C_FLAGS=-w >"$W/configure.log" 2>&1 || { cat "$W/configure.log"; exit 1; }
+cmake --build "$W/build" -j4 >"$W/build.log" 2>&1 || { cat "$W/build.log"; exit 1; }
+cmake --install "$W/build" >/dev/null
+cc $CFLAGS -O1 -Wall -Wextra -I"$W/wolfssl/include" \
+    /src/tests/certificates/main.c "$W/wolfssl/lib/libwolfssl.a" -lm -lpthread -o "$W/client"
+python3 /src/tests/certificates/test.py "$W/client"
+SH

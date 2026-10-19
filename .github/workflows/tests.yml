@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  https:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Requests and response handling
+        run: sh tests/request/run
+      - name: Real certificate chains and verification failures
+        run: sh tests/certificates/run
+      - name: TLS on an unset console clock
+        run: sh tests/clock/run

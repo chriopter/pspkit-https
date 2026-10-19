@@ -38,6 +38,14 @@
 #                    size limit that presents itself as a forged certificate is
 #                    the worst kind.
 #
+#   WOLFSSL_ASN_     Accept legacy certificates with serial number zero. Archive.org
+#   ALLOW_0_SERIAL   sends the self-signed Go Daddy Class 2 root (serial 0) at
+#                    the end of its chain. wolfSSL 5.9.2 rejects that peer-sent
+#                    root with ASN_PARSE_E (-140), even with the newer trust
+#                    anchor already in our bundle. This compatibility option
+#                    relaxes only the serial-number rule, not signatures,
+#                    issuer trust, host matching or the other ASN.1 checks.
+#
 #   WOLFSSL_USER_IO  src/https.c supplies the socket callbacks, since the SDK's
 #                    BSD wrappers do not work, so wolfSSL's EmbedSend and
 #                    EmbedReceive are left out. That also keeps out the IPv6
@@ -74,7 +82,7 @@ WORK="$KIT/build/wolfssl-cmake"
 
 # The departures above, as the compiler sees them. One list, because the
 # application has to be shown the same one: see the end of this script.
-DEFS="NO_WRITEV NO_DEV_RANDOM WOLFSSL_USER_IO SP_INT_BITS=4096 WOLFSSL_ALT_CERT_CHAINS CUSTOM_RAND_GENERATE_SEED=pspkit_https_seed USER_TICKS"
+DEFS="NO_WRITEV NO_DEV_RANDOM WOLFSSL_USER_IO SP_INT_BITS=4096 WOLFSSL_ALT_CERT_CHAINS WOLFSSL_ASN_ALLOW_0_SERIAL CUSTOM_RAND_GENERATE_SEED=pspkit_https_seed USER_TICKS"
 CFLAGS="${EXTRA_CFLAGS:-} -include $KIT/src/wolfssl_seed.h"
 for d in $DEFS; do CFLAGS="$CFLAGS -D$d"; done
 
@@ -109,7 +117,7 @@ awk -v frag="$FRAG" '
 	END { for (i = 1; i <= NR; i++) { if (i == last) print frag; print line[i] } }
 ' "$OPTS" >"$OPTS.tmp" && mv "$OPTS.tmp" "$OPTS"
 
-for d in WOLFSSL_TLS13 HAVE_CURVE25519 HAVE_ED25519 HAVE_CHACHA WOLFSSL_ALT_CERT_CHAINS SP_INT_BITS WOLFSSL_USER_IO USER_TICKS; do
+for d in WOLFSSL_TLS13 HAVE_CURVE25519 HAVE_ED25519 HAVE_CHACHA WOLFSSL_ALT_CERT_CHAINS WOLFSSL_ASN_ALLOW_0_SERIAL SP_INT_BITS WOLFSSL_USER_IO USER_TICKS; do
 	grep -qE "^#define $d" "$OPTS" && echo "  on   $d" || { echo "  OFF  $d" >&2; exit 1; }
 done
 # No way to the console's clock may be left in the library, or a connection

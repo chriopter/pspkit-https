@@ -256,6 +256,56 @@ int main(void) {
     CHECK(requests[0] == '\0' && r.body_len == 0);
     fail_nonblock = 0;
 
+    /* Transfer framing is decoded before the sink; gzip stays encoded. */
+    CHECK(get("https://example.org/chunks", &r,
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: ChUnKeD \t\r\n\r\n"
+        "3;foo=bar\r\nabc\r\n2\r\nde\r\n0\r\nX-Check: yes\r\n\r\n", NULL) == HTTPS_COMPLETE);
+    CHECK(body_len == 5 && !memcmp(body, "abcde", 5) && r.body_len == 5 && r.content_length == 0);
+    static const char *const bad_chunks[] = {
+        "z\r\n", "1\r\naX\n0\r\n\r\n", "1\r\na\rX0\r\n\r\n", "1\na\r\n0\r\n\r\n",
+        "1\r\na\r\n", "0\r\n", "0\r\nX: y\r\n", "0\r\nBad trailer\r\n\r\n",
+        "0\r\nContent-Length: 1\r\n\r\n", "0\r\nTransfer-Encoding: chunked\r\n\r\n",
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\r\n", "1x\r\na\r\n0\r\n\r\n", "2\r\na"
+    };
+    for (unsigned i = 0; i < sizeof(bad_chunks) / sizeof(*bad_chunks); i++) {
+        char answer[512];
+        snprintf(answer, sizeof(answer), "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n%s", bad_chunks[i]);
+        CHECK(get("https://example.org/bad-chunks", &r, answer, NULL) != HTTPS_COMPLETE);
+    }
+    static const char *const bad_te[] = {
+        "Transfer-Encoding: gzip", "Transfer-Encoding: gzip, chunked",
+        "Transfer-Encoding: chunked, chunked", "Transfer-Encoding: chunked\r\nContent-Length: 0",
+        "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked"
+    };
+    for (unsigned i = 0; i < sizeof(bad_te) / sizeof(*bad_te); i++) {
+        char answer[256];
+        snprintf(answer, sizeof(answer), "HTTP/1.1 200 OK\r\n%s\r\n\r\n0\r\n\r\n", bad_te[i]);
+        CHECK(get("https://example.org/bad-te", &r, answer, NULL) == HTTPS_FAILED);
+    }
+    char oversized_chunk[2048];
+    strcpy(oversized_chunk, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1;");
+    size_t prefix_len = strlen(oversized_chunk);
+    memset(oversized_chunk + prefix_len, 'x', 1500);
+    oversized_chunk[prefix_len + 1500] = 0;
+    CHECK(get("https://example.org/long-chunk", &r, oversized_chunk, NULL) != HTTPS_COMPLETE);
+
+    char trailers[10000];
+    strcpy(trailers, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n");
+    for (int i = 0; i < 1500; i++) strcat(trailers, "X: y\r\n");
+    strcat(trailers, "\r\n");
+    CHECK(get("https://example.org/long-trailers", &r, trailers, NULL) == HTTPS_TRUNCATED);
+    /* A complete zero chunk alone is insufficient: trailers must finish. */
+    CHECK(get("https://example.org/partial-chunks", &r,
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nab\r\n0\r\n", NULL) == HTTPS_TRUNCATED);
+    CHECK(r.body_len == 2 && r.truncated);
+    /* Sink refusal still aborts; framing never masks it as success. */
+    char sink_overflow[512];
+    strcpy(sink_overflow, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n101\r\n");
+    prefix_len = strlen(sink_overflow);
+    memset(sink_overflow + prefix_len, 'x', 257);
+    strcpy(sink_overflow + prefix_len + 257, "\r\n0\r\n\r\n");
+    CHECK(get("https://example.org/sink-full", &r, sink_overflow, NULL) == HTTPS_TRUNCATED);
+
     /* The same answers cut at random points read the same as whole. */
     static const char *const script[][2] = {
         { "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Encoding: gzip\r\n\r\n\x1f\x8b\x08\x01", NULL },
@@ -265,6 +315,8 @@ int main(void) {
         { "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloEXTRA", NULL },
         { "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nshort", NULL },
         { "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", NULL },
+        { "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3;foo=bar\r\nabc\r\n2\r\nde\r\n0\r\nX: y\r\n\r\n", NULL },
+        { "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\na", NULL },
         { "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx", NULL },
     };
     for (unsigned c = 0; c < sizeof(script) / sizeof(*script); c++) {

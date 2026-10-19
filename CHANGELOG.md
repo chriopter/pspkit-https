@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.6
+
+- Stream HTTP chunked responses, including Archive.org metadata used for download recovery. Fragmented chunks and bounded trailers are decoded before the sink; malformed or incomplete framing and ambiguous transfer lengths are refused.
+
+- Downloads from Archive.org work again: accept legacy certificate serial numbers of zero, including the redundant Go Daddy Class 2 root its servers send. wolfSSL 5.9.2 otherwise ends the handshake with `ASN_PARSE_E` (-140). Signature, issuer and hostname checks remain in force. Rebuild wolfSSL when updating; `tests/certificates` covers the chain and rejects forged, untrusted and wrong-host certificates.
+
 ## 0.2.5
 
 - A console whose clock is not set downloads like any other. wolfSSL read a time of 0 as a failed clock and ended the connection with `GETTIME_ERROR` (-337) at the first TLS 1.3 session ticket, so every request to a server that sends tickets, `raw.githubusercontent.com` among them, failed after the handshake

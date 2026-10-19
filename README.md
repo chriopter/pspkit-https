@@ -90,10 +90,12 @@ the dialog only while network workers are stopped.
 - Progress callbacks also run periodically while waiting for response data, with unchanged byte counts, so a UI can still cancel a stalled download
 - Timeouts: 10 s to connect, 20 s for the handshake, 30 s for the whole response head, then 30 s without a byte of body. A slow body is never cut off for being slow, so a big download on 802.11b can finish
 - `https_set_time_limit(seconds)` gives a whole `https_get` a bound, redirects included: `FAILED` if it runs out before the body, `TRUNCATED` after. Off by default
-- Connections to the same server are reused for 30 seconds
+- Up to six idle connections are kept for 60 seconds
 - `https_abort()` stops a download from any thread
 - `https_set_accept_gzip(1)` asks for gzip; the body reaches your sink as sent, `content_encoding` in the result names it, and inflating is yours (zlib's `inflateInit2` with `16 + MAX_WBITS`). Off by default, and best left off for files that are already compressed
-- Not supported: chunked responses, POST, IPv6, two downloads at once
+- Chunked responses are streamed to the sink with framing removed; `content_length` stays zero. Chunk headers are bounded to 1023 bytes and trailers to 8 KiB. Unsupported transfer codings and ambiguous Transfer-Encoding plus Content-Length are refused
+- Concurrent requests have separate buffers; TLS handshakes are serialized
+- Not supported: POST, IPv6
 
 </details>
 
@@ -150,7 +152,7 @@ include lib/pspkit-https/module.mk
 ```
 
 Updating is `git -C lib/pspkit-https checkout v0.2.2` and a commit; build
-wolfSSL again when its version changed.
+wolfSSL again when its version or `tools/build-wolfssl` changed.
 
 </details>
 
@@ -165,6 +167,8 @@ wolfSSL again when its version changed.
 | `tests/nettest/run` | Measures download speed over a local connection |
 | `tests/request/run` | Checks the request and the response head on the PC, against a scripted server |
 | `tests/clock/run` | Checks, with wolfSSL built for the PC, that a clock reading 0 stops no connection |
+| `tests/certificates/run` | Checks legacy serial-zero certificate chains and rejects forged chains, unknown issuers, wrong hostnames and malformed ASN.1 |
+| `make -C tests/corpus` | Builds a PSP download auditor: reads `jobs.tsv`, retains ZIPs and records sizes, SHA-256, HTTP/TLS failures and progress; run each emulator with its own Memory Stick |
 | `ca/update` | Fetches the newest root certificates |
 | `tools/entropy-sim` | Tests the seed counting against lazy input on the PC |
 

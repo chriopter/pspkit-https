@@ -21,6 +21,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <ctype.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -933,6 +934,83 @@ static void save_idle(struct connection *c) {
     pthread_mutex_unlock(&g_lock);
 }
 
+/* Chunk framing is bounded independently of the streamed body. No framing
+   bytes reach the sink, and a close before the final trailer CRLF is partial. */
+enum chunk_state { CHUNK_SIZE, CHUNK_DATA, CHUNK_CR, CHUNK_LF, CHUNK_TRAILERS, CHUNK_DONE };
+struct chunks {
+    size_t remaining, used, trailer_bytes;
+    enum chunk_state state;
+    char line[1024];
+};
+static int chunk_feed(struct chunks *c, const char *data, size_t len, https_sink sink, void *ctx,
+                      struct https_result *res) {
+    while (len) {
+        if (c->state == CHUNK_DONE) return 1; /* extra bytes: close rather than reuse */
+        if (c->state == CHUNK_DATA) {
+            size_t n = len < c->remaining ? len : c->remaining;
+            if (n > (size_t)-1 - res->body_len) return -1;
+            if (sink && sink(ctx, data, n) != 0) {
+                logline("sink aborted");
+                return -1;
+            }
+            res->body_len += n;
+            data += n;
+            len -= n;
+            c->remaining -= n;
+            if (!c->remaining) c->state = CHUNK_CR;
+            continue;
+        }
+        unsigned char ch = (unsigned char)*data++;
+        len--;
+        if (c->state == CHUNK_CR || c->state == CHUNK_LF) {
+            if (ch != (c->state == CHUNK_CR ? '\r' : '\n')) return -1;
+            c->state = c->state == CHUNK_CR ? CHUNK_LF : CHUNK_SIZE;
+            continue;
+        }
+        if (c->state == CHUNK_TRAILERS && ++c->trailer_bytes > HEAD_MAX) return -1;
+        if (c->used == sizeof(c->line) - 1) return -1;
+        c->line[c->used++] = (char)ch;
+        if (ch != '\n') {
+            if ((ch < 32 && ch != '\r' && ch != '\t') || ch == 127) return -1;
+            if (c->used > 1 && c->line[c->used - 2] == '\r') return -1;
+            continue;
+        }
+        if (c->used < 2 || c->line[c->used - 2] != '\r') return -1;
+        c->line[c->used - 2] = 0;
+        if (c->state == CHUNK_TRAILERS) {
+            if (c->used == 2) {
+                c->state = CHUNK_DONE;
+                return 1;
+            }
+            char *colon = strchr(c->line, ':');
+            if (!colon || colon == c->line) return -1;
+            for (char *p = c->line; p < colon; p++)
+                if (!isalnum((unsigned char)*p) && !strchr("!#$%&'*+-.^_`|~", *p)) return -1;
+            *colon = 0;
+            if (!strcasecmp(c->line, "Content-Length") || !strcasecmp(c->line, "Transfer-Encoding"))
+                return -1;
+        } else {
+            size_t n = 0;
+            char *p = c->line;
+            if (!isxdigit((unsigned char)*p)) return -1;
+            while (isxdigit((unsigned char)*p)) {
+                unsigned digit = *p <= '9' ? (unsigned)(*p - '0')
+                                           : (unsigned)(tolower((unsigned char)*p) - 'a' + 10);
+                if (n > ((size_t)-1 - digit) / 16) return -1;
+                n = n * 16 + digit;
+                p++;
+            }
+            /* Extensions are opaque visible text, separated by a semicolon. */
+            if (*p && *p != ';') return -1;
+            if (n > (size_t)-1 - res->body_len) return -1;
+            c->remaining = n;
+            c->state = n ? CHUNK_DATA : CHUNK_TRAILERS;
+        }
+        c->used = 0;
+    }
+    return c->state == CHUNK_DONE;
+}
+
 /* One HTTP request, possibly over an idle connection. Fills head[] and streams
    the body. Returns: 0 complete, 1 truncated, <0 failed before the body.
    On a 3xx with Location, *redirect is filled and 2 is returned. */
@@ -1124,6 +1202,7 @@ request:
     size_t leftover_len = 0;
     size_t want = 0;
     int have_length = 0, chunked = 0;
+    struct chunks chunks = {0};
     start = now_ms();
     unsigned progress_at = start;
     for (;;) {
@@ -1201,13 +1280,24 @@ request:
                     res->content_encoding[n] = '\0';
                 }
                 const char *te = header(head, hl, "Transfer-Encoding");
-                if (te) chunked = 1;
+                if (te) {
+                    const char *end = mem_find(te, (size_t)(head + hl - te), "\r\n", 2);
+                    const char *trim = end;
+                    while (trim > te && (trim[-1] == ' ' || trim[-1] == '\t'))
+                        trim--;
+                    if (have_length || trim - te != 7 || strncasecmp(te, "chunked", 7) ||
+                        header(end + 2, (size_t)(head + hl - end - 2), "Transfer-Encoding")) {
+                        logline("http: ambiguous or unsupported transfer-encoding");
+                        goto out;
+                    }
+                    chunked = 1;
+                }
                 const char *connection = header(head, hl, "Connection");
-                const char *connection_end = connection
-                    ? mem_find(connection, (size_t)(head + hl - connection), "\r\n", 2) : NULL;
-                can_keep = have_length && !chunked &&
-                    !strncmp(head, "HTTP/1.1 ", 9) &&
-                    !connection_closes(connection, connection_end);
+                const char *connection_end =
+                    connection ? mem_find(connection, (size_t)(head + hl - connection), "\r\n", 2)
+                               : NULL;
+                can_keep = have_length && !chunked && !strncmp(head, "HTTP/1.1 ", 9) &&
+                           !connection_closes(connection, connection_end);
 
                 if (res->status >= 300 && res->status < 400) {
                     const char *loc = header(head, hl, "Location");
@@ -1224,16 +1314,11 @@ request:
                         goto out;
                     }
                 }
-                if (chunked) {
-                    /* GitHub serves everything we ask for with a length;
-                       a chunk decoder is not worth its bytes until it is not. */
-                    logline("http: transfer-encoding not supported");
-                    goto out;
-                }
                 /* These statuses have no message body even when metadata
                    announces the length of the corresponding representation. */
                 if (res->status == 204 || res->status == 304) {
                     want = 0;
+                    chunked = 0;
                     have_length = 1;
                     res->content_length = 0;
                 }
@@ -1265,6 +1350,21 @@ request:
                 }
                 if (len == 0) continue;
 
+                if (chunked) {
+                    int decoded = chunk_feed(&chunks, data, len, sink, sink_ctx, res);
+                    if (decoded < 0) {
+                        logline("http: invalid chunked body or sink failure");
+                        goto out;
+                    }
+                    if (progress) progress(progress_ctx, res->body_len, 0);
+                    if (aborted()) goto out;
+                    if (decoded > 0) {
+                        ret = 0;
+                        goto out;
+                    }
+                    continue;
+                }
+
                 /* Anything past Content-Length is not part of this message. */
                 if (have_length && len > want - res->body_len) {
                     logline("http: %lu bytes past content-length, ignored",
@@ -1288,7 +1388,7 @@ request:
         int e = wolfSSL_get_error(ssl, rc);
         if (e == WOLFSSL_ERROR_NONE || e == WOLFSSL_ERROR_ZERO_RETURN) {
             /* Clean close: complete unless a length says otherwise. */
-            if (body_start && (!have_length || res->body_len >= want)) ret = 0;
+            if (body_start && !chunked && (!have_length || res->body_len >= want)) ret = 0;
             else if (!body_start) {
                 logline("http: closed before head");
                 if (reused) *stale = 1;
