@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7
+
+- Mozilla's roots as of Tue Oct 20 13:32:40 2026 GMT. Removed: emSign ECC Root CA - C3; emSign ECC Root CA - G3; emSign Root CA - C1. The CA generator accepts curl's fingerprint comments.
+
 ## 0.2.6
 
 - Stream HTTP chunked responses, including Archive.org metadata used for download recovery. Fragmented chunks and bounded trailers are decoded before the sink; malformed or incomplete framing and ambiguous transfer lengths are refused.

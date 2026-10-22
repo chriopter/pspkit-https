@@ -32,7 +32,11 @@ if digest != pinned:
 
 text = data.decode("utf-8")
 dated = re.search(r"^## Certificate data from Mozilla as of: (.+)$", text, re.M)
-blocks = re.findall(r"([^\n]+)\n=+\n-----BEGIN CERTIFICATE-----\n(.*?)-----END CERTIFICATE-----", text, re.S)
+# curl 1.35 adds fingerprint comments between the name and the PEM block.
+blocks = re.findall(
+    r"^([^\n]+)\n=+\n(?:#[^\n]*\n)*-----BEGIN CERTIFICATE-----\n"
+    r"(.*?)-----END CERTIFICATE-----", text, re.M | re.S,
+)
 if len(blocks) != text.count("-----BEGIN CERTIFICATE-----"):
     sys.exit("a certificate without a name above it: the format changed")
 
