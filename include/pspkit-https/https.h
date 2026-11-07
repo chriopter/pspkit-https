@@ -128,6 +128,11 @@ enum https_doubt https_doubt_take(char *host, size_t size);
    Acceptance lasts until eviction or disconnect. */
 void https_doubt_accept(void);
 
+/* The question owner, before the requests that should know it: a host
+   accepted on an earlier run, taken as https_doubt_accept would take it,
+   into the same eight places. */
+void https_doubt_trust(const char *host);
+
 enum https_outcome { HTTPS_FAILED = -1, HTTPS_COMPLETE = 0, HTTPS_TRUNCATED = 1 };
 
 /* Worker after a successful connect: GET a non-NULL https:// URL, following

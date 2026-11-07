@@ -210,6 +210,17 @@ void https_doubt_accept(void) {
     g_asked_host[0] = '\0';
     pthread_mutex_unlock(&g_lock);
 }
+void https_doubt_trust(const char *host) {
+    if (!host || !host[0] || strlen(host) >= sizeof(g_trusted[0]))
+        return;
+    pthread_mutex_lock(&g_lock);
+    int known = 0;
+    for (int i = 0; i < TRUSTED_MAX && !known; i++)
+        known = !strcmp(g_trusted[i], host);
+    if (!known)
+        snprintf(g_trusted[g_trusted_next++ % TRUSTED_MAX], sizeof(g_trusted[0]), "%s", host);
+    pthread_mutex_unlock(&g_lock);
+}
 void https_get_last_info(struct https_info *out) {
     pthread_mutex_lock(&g_lock);
     *out = g_last;

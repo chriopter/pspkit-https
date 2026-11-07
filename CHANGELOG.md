@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.8
+
+- `https_doubt_trust(host)`: a host the player accepted on an earlier run is accepted again, as `https_doubt_accept()` would, so an app that keeps its answers asks once, not every run. Same eight places, date and issuer doubts only; a forged signature or the wrong name still fails
+
 ## 0.2.7
 
 - Mozilla's roots as of Tue Oct 20 13:32:40 2026 GMT. Removed: emSign ECC Root CA - C3; emSign ECC Root CA - G3; emSign Root CA - C1. The CA generator accepts curl's fingerprint comments.
