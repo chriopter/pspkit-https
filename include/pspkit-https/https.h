@@ -135,8 +135,10 @@ void https_doubt_trust(const char *host);
 
 enum https_outcome { HTTPS_FAILED = -1, HTTPS_COMPLETE = 0, HTTPS_TRUNCATED = 1 };
 
-/* Worker after a successful connect: GET a non-NULL https:// URL, following
-   up to five redirects. HTTP downgrades and transfer encodings are refused;
+/* Worker after a successful connect: GET a non-NULL https:// URL, or an
+   http:// one -- a server somebody hosts at home, with no TLS and so nothing
+   checked: hold what it sends to a hash -- following up to five redirects.
+   Redirects from https down to http and transfer encodings are refused;
    a content encoding reaches the sink undecoded and is named in the result.
    Hosts are DNS names or IPv4 literals; IPv6 and URL userinfo are unsupported.
    COMPLETE means a whole body, regardless of HTTP status; inspect status

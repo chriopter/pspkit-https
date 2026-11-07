@@ -87,6 +87,7 @@ static int over_time(void) {
 }
 
 #define PORT 443
+#define PLAIN_PORT 80
 #define MAX_REDIRECTS 5
 #define HEAD_MAX (8 * 1024)
 
@@ -528,20 +529,23 @@ static int head_clean(const char *head, size_t len) {
 /* ------------------------------------------------------------------- url */
 
 /* A GitHub release download redirects to a signed URL well over 512 bytes. */
-struct url { char host[128]; char path[1600]; unsigned short port; };
+/* plain: http://, which a server its owner hosts may be, with no TLS. */
+struct url { char host[128]; char path[1600]; unsigned short port; int plain; };
 
 static int url_parse(const char *s, struct url *u) {
-    if (strncmp(s, "https://", 8) != 0) return -1;
+    if (!strncmp(s, "http://", 7)) u->plain = 1;
+    else if (!strncmp(s, "https://", 8)) u->plain = 0;
+    else return -1;
     /* Literal controls and spaces would become request delimiters. */
     for (const unsigned char *p = (const unsigned char *)s; *p; p++)
         if (*p <= 32 || *p == 127) return -1;
-    s += 8;
+    s += u->plain ? 7 : 8;
     const char *path = s + strcspn(s, "/?#");
     size_t hl = (size_t)(path - s);
     if (hl == 0 || hl >= sizeof(u->host)) return -1;
     memcpy(u->host, s, hl);
     u->host[hl] = '\0';
-    u->port = PORT;
+    u->port = u->plain ? PLAIN_PORT : PORT;
     char *colon = strchr(u->host, ':');
     if (colon) {
         *colon = '\0';
@@ -590,12 +594,14 @@ static int url_resolve(const struct url *base, const char *loc, size_t loclen,
     tmp[loclen] = '\0';
     if (memchr(tmp, '\0', loclen)) return -1;
     int n;
+    const char *scheme = base->plain ? "http" : "https";
     if (!strncmp(tmp, "//", 2)) {
-        n = snprintf(absolute, sizeof(absolute), "https:%s", tmp);
+        n = snprintf(absolute, sizeof(absolute), "%s:%s", scheme, tmp);
     } else if (strchr(tmp, ':') && (size_t)(strchr(tmp, ':') - tmp) < strcspn(tmp, "/?#")) {
         return url_parse(tmp, out);
     } else {
-        if (base->port == PORT) snprintf(authority, sizeof(authority), "%s", base->host);
+        if (base->port == (base->plain ? PLAIN_PORT : PORT))
+            snprintf(authority, sizeof(authority), "%s", base->host);
         else snprintf(authority, sizeof(authority), "%s:%u", base->host, base->port);
         snprintf(path, sizeof(path), "%s", base->path);
         if (tmp[0] == '/') path[0] = '\0';
@@ -605,7 +611,7 @@ static int url_resolve(const struct url *base, const char *loc, size_t loclen,
             char *slash = strrchr(path, '/');
             if (slash) slash[1] = '\0';
         }
-        n = snprintf(absolute, sizeof(absolute), "https://%s%s%s", authority, path, tmp);
+        n = snprintf(absolute, sizeof(absolute), "%s://%s%s%s", scheme, authority, path, tmp);
     }
     return n < 0 || n >= (int)sizeof(absolute) ? -1 : url_parse(absolute, out);
 }
@@ -881,6 +887,7 @@ struct connection {
     WOLFSSL *ssl;
     char host[128];
     unsigned short port;
+    int plain;
     unsigned idle_at;
 };
 static struct connection *g_idle[IDLE_SLOTS];
@@ -917,7 +924,7 @@ static struct connection *take_idle(const struct url *u) {
         if (expired(c->idle_at, IDLE_MS)) {
             close_connection(c, 0);
             g_idle[i] = NULL;
-        } else if (c->port == u->port && !strcmp(c->host, u->host)) {
+        } else if (c->port == u->port && c->plain == u->plain && !strcmp(c->host, u->host)) {
             g_idle[i] = NULL;
             found = c;
             break;
@@ -1022,6 +1029,15 @@ static int chunk_feed(struct chunks *c, const char *data, size_t len, https_sink
     return c->state == CHUNK_DONE;
 }
 
+/* A plain connection's read or write, through the same callbacks TLS reads
+   and writes through, told as wolfSSL_get_error tells its own. */
+static int plain_error(int rc) {
+    return rc == WOLFSSL_CBIO_ERR_WANT_READ ? WOLFSSL_ERROR_WANT_READ
+         : rc == WOLFSSL_CBIO_ERR_WANT_WRITE ? WOLFSSL_ERROR_WANT_WRITE
+         : rc == WOLFSSL_CBIO_ERR_CONN_CLOSE ? WOLFSSL_ERROR_ZERO_RETURN
+         : -1;                                /* none of those: the connection failed */
+}
+
 /* One HTTP request, possibly over an idle connection. Fills head[] and streams
    the body. Returns: 0 complete, 1 truncated, <0 failed before the body.
    On a 3xx with Location, *redirect is filled and 2 is returned. */
@@ -1063,6 +1079,7 @@ static int request_with(const struct url *u, https_sink sink, void *sink_ctx,
     conn->sock = -1;
     snprintf(conn->host, sizeof(conn->host), "%s", u->host);
     conn->port = u->port;
+    conn->plain = u->plain;
 
     sock = sceNetInetSocket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) { logline("socket failed"); ret = -2; goto out; }
@@ -1107,6 +1124,18 @@ static int request_with(const struct url *u, https_sink sink, void *sink_ctx,
         }
     }
     stir_power(now_ms() - start);
+
+    /* http:// has no handshake: the request goes out on the socket as it is. */
+    if (u->plain) {
+        logline("%s plain http, no TLS", u->host);
+        pthread_mutex_lock(&g_lock);
+        snprintf(g_last.host, sizeof(g_last.host), "%s", u->host);
+        snprintf(g_last.cipher, sizeof(g_last.cipher), "none (http)");
+        snprintf(g_last.group, sizeof(g_last.group), "-");
+        g_last.handshake_ms = 0;
+        pthread_mutex_unlock(&g_lock);
+        goto request;
+    }
 
     WOLFSSL_CTX *ctx = roots_ready();
     if (!ctx) goto out;
@@ -1180,7 +1209,7 @@ request:
     phase("request");
     pace_begin();
     char authority[140];
-    if (u->port == PORT) snprintf(authority, sizeof(authority), "%s", u->host);
+    if (u->port == (u->plain ? PLAIN_PORT : PORT)) snprintf(authority, sizeof(authority), "%s", u->host);
     else snprintf(authority, sizeof(authority), "%s:%u", u->host, u->port);
     int reqlen = snprintf(buf, REQUEST_BUF,
                           "GET %s HTTP/1.1\r\n"
@@ -1193,9 +1222,10 @@ request:
 
     start = now_ms();
     for (int sent = 0; sent < reqlen; ) {
-        rc = wolfSSL_write(ssl, buf + sent, reqlen - sent);
+        rc = ssl ? wolfSSL_write(ssl, buf + sent, reqlen - sent)
+                 : io_send(NULL, buf + sent, reqlen - sent, &sock);
         if (rc > 0) { sent += rc; continue; }
-        int e = wolfSSL_get_error(ssl, rc);
+        int e = ssl ? wolfSSL_get_error(ssl, rc) : plain_error(rc);
         if (e != WOLFSSL_ERROR_WANT_READ && e != WOLFSSL_ERROR_WANT_WRITE) {
             logline("write failed %d", e);
             if (reused) *stale = 1;
@@ -1232,7 +1262,7 @@ request:
             progress_at = now_ms();
         }
         if (aborted()) goto out;
-        rc = wolfSSL_read(ssl, buf, REQUEST_BUF);
+        rc = ssl ? wolfSSL_read(ssl, buf, REQUEST_BUF) : io_recv(NULL, buf, REQUEST_BUF, &sock);
         if (rc > 0) {
             if (body_start) start = now_ms();
             const char *data = buf;
@@ -1396,7 +1426,7 @@ request:
             continue;
         }
 
-        int e = wolfSSL_get_error(ssl, rc);
+        int e = ssl ? wolfSSL_get_error(ssl, rc) : plain_error(rc);
         if (e == WOLFSSL_ERROR_NONE || e == WOLFSSL_ERROR_ZERO_RETURN) {
             /* Clean close: complete unless a length says otherwise. */
             if (body_start && !chunked && (!have_length || res->body_len >= want)) ret = 0;
@@ -1472,6 +1502,15 @@ enum https_outcome https_get(const char *url, https_sink sink, void *sink_ctx,
         }
         if (res.redirects >= MAX_REDIRECTS) {
             logline("too many redirects");
+            snprintf(res.host, sizeof(res.host), "%s", u.host);
+            if (out) *out = res;
+            phase("");
+            return HTTPS_FAILED;
+        }
+        /* An https:// request is not handed to http:// by a redirect: what
+           the caller asked to be private stays so. */
+        if (next.plain && !u.plain) {
+            logline("redirect from https to http refused");
             snprintf(res.host, sizeof(res.host), "%s", u.host);
             if (out) *out = res;
             phase("");

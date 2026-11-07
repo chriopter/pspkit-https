@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9
+
+- `http://` URLs, for servers people host themselves: a plain socket, port 80 by default, and everything else as for `https://`, from the head to chunked bodies, redirects and idle connections, which are kept apart from TLS ones. A redirect from `https://` down to `http://` is still refused; one from `http://` up to `https://` is followed
+
 ## 0.2.8
 
 - `https_doubt_trust(host)`: a host the player accepted on an earlier run is accepted again, as `https_doubt_accept()` would, so an app that keeps its answers asks once, not every run. Same eight places, date and issuer doubts only; a forged signature or the wrong name still fails

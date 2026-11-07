@@ -3,6 +3,7 @@
    read back as the server's response, one answer per request. Connecting,
    the handshake and the roots all succeed without doing anything. */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,7 @@ static unsigned chunk_seed;          /* nonzero: reads end at random points */
 static unsigned trickle_ms;          /* nonzero: a byte a read, this far apart */
 static int trickle_waiting;
 static int stall_after_answers, fail_nonblock;
+static int tls_sessions;             /* wolfSSL sessions begun */
 static https_progress request_progress;
 static SceInt64 clock_us = 1000000;  /* the PSP's clock; each look moves it 1 ms */
 
@@ -356,6 +358,35 @@ int main(void) {
     CHECK(llabs(date - (long long)time(NULL)) < 2 * 86400);
     CHECK(LowResTimer() == (unsigned)date);
 
+    /* http://: the request on the socket itself, no TLS session, the port
+       in Host only where it is not 80. */
+    https_set_accept_gzip(0);
+    int sessions = tls_sessions;
+    CHECK(get("http://192.168.1.5/catalog.json", &r, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+              NULL) == HTTPS_COMPLETE);
+    CHECK(tls_sessions == sessions);
+    const char *line = "GET /catalog.json HTTP/1.1\r\nHost: 192.168.1.5\r\n";
+    CHECK(!strncmp(requests, line, strlen(line)));
+    CHECK(body_len == 2 && !memcmp(body, "{}", 2));
+    CHECK(get("http://shelf.lan:8080/a.iso", &r, "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx", NULL) ==
+          HTTPS_COMPLETE);
+    CHECK(strstr(requests, "\r\nHost: shelf.lan:8080\r\n") != NULL);
+    /* Up to https is followed; down from https to http is not. */
+    CHECK(get("http://shelf.lan/b", &r,
+              "HTTP/1.1 301 Moved\r\nLocation: https://shelf.lan/b\r\nContent-Length: 0\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok") == HTTPS_COMPLETE);
+    CHECK(r.redirects == 1 && tls_sessions == sessions + 1);
+    CHECK(get("https://shelf.lan/c", &r,
+              "HTTP/1.1 302 Found\r\nLocation: http://shelf.lan/c\r\nContent-Length: 0\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nno") == HTTPS_FAILED);
+    CHECK(body_len == 0);
+    /* A relative redirect stays on http. */
+    sessions = tls_sessions;
+    CHECK(get("http://shelf.lan/d", &r,
+              "HTTP/1.1 302 Found\r\nLocation: /e\r\nContent-Length: 0\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\ne") == HTTPS_COMPLETE);
+    CHECK(tls_sessions == sessions && strstr(requests, "GET /e HTTP/1.1") != NULL);
+
     https_net_disconnect();
     printf("request: %s\n", failures ? "FAILED" : "ok");
     return failures != 0;
@@ -386,10 +417,23 @@ int sceNetInetSetsockopt(int s, int level, int option, const void *value, sockle
     return fail_nonblock ? -1 : 0;
 }
 int sceNetInetConnect(int s, const struct sockaddr *addr, socklen_t len) { return 0; }
-size_t sceNetInetRecv(int s, void *buf, size_t len, int flags) { return (size_t)-1; }
-size_t sceNetInetSend(int s, const void *buf, size_t len, int flags) { return (size_t)-1; }
-int sceNetInetClose(int s) { return 0; }
-int sceNetInetGetErrno(void) { return 0; }
+/* http:// talks to the socket itself: the same scripted server, and the
+   same answer for a connection that ends with bytes left unread. */
+static int net_errno;
+size_t sceNetInetRecv(int s, void *buf, size_t len, int flags) {
+    int n = wolfSSL_read(NULL, buf, (int)len);
+    net_errno = n < 0 ? EAGAIN : 0;
+    return (size_t)(n < 0 ? -1 : n);
+}
+size_t sceNetInetSend(int s, const void *buf, size_t len, int flags) {
+    net_errno = 0;
+    return (size_t)wolfSSL_write(NULL, buf, (int)len);
+}
+int sceNetInetClose(int s) {
+    if (answer_at) { answer++; answer_at = 0; }
+    return 0;
+}
+int sceNetInetGetErrno(void) { return net_errno; }
 int sceNetResolverInit(void) { return 0; }
 int sceNetResolverTerm(void) { return 0; }
 int sceNetResolverCreate(int *rid, void *buf, SceSize len) { *rid = 1; return 0; }
@@ -424,7 +468,7 @@ void wolfSSL_CTX_set_verify(WOLFSSL_CTX *ctx, int mode, VerifyCallback verify) {
 void wolfSSL_CTX_SetIORecv(WOLFSSL_CTX *ctx, CallbackIORecv recv) {}
 void wolfSSL_CTX_SetIOSend(WOLFSSL_CTX *ctx, CallbackIOSend send) {}
 int wolfSSL_CTX_set_groups(WOLFSSL_CTX *ctx, int *groups, int count) { return WOLFSSL_SUCCESS; }
-WOLFSSL *wolfSSL_new(WOLFSSL_CTX *ctx) { return (WOLFSSL *)&dummy; }
+WOLFSSL *wolfSSL_new(WOLFSSL_CTX *ctx) { tls_sessions++; return (WOLFSSL *)&dummy; }
 /* A session that ends takes what it had not read with it: the next request
    is on a connection of its own and starts at the next answer. */
 void wolfSSL_free(WOLFSSL *ssl) {
