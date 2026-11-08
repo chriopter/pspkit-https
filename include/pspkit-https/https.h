@@ -40,6 +40,25 @@ void https_set_accept_gzip(int on);
    full or a field is too long. Over http:// it goes in the clear. */
 int https_set_basic(const char *host, const char *user, const char *password);
 
+/* Any thread: reach host through something other than the console's own
+   sockets -- a tunnel, say -- from the next connection on; NULL goes back
+   to the sockets. TLS, the certificate check and HTTP stay as they are; only
+   the bytes travel another way. connect may take up to ten seconds and
+   returns a handle (>= 0) or < 0; send and recv never block and return the
+   bytes moved, HTTPS_AGAIN when there is nothing or no room yet, 0 from
+   recv when the far side closed, or < 0 otherwise; close ends the handle.
+   The table holds eight hosts; -1 when it is full. The transport must stay
+   valid while it is set. */
+#define HTTPS_AGAIN (-1000)
+struct https_transport {
+    int (*connect)(const char *host, unsigned short port, void *ctx);
+    int (*send)(int handle, const void *buf, int len, void *ctx);
+    int (*recv)(int handle, void *buf, int len, void *ctx);
+    void (*close)(int handle, void *ctx);
+    void *ctx;
+};
+int https_set_transport(const char *host, const struct https_transport *t);
+
 /* Worker, between requests: cap received data in decimal kilobytes per
    second; zero removes the limit. */
 void https_set_rate_limit(unsigned kbps);

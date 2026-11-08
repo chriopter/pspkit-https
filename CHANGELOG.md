@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.11
+
+- `https_set_transport(host, transport)`: a host reached through something other than the console's own sockets -- a tunnel such as [pspkit-tunnel](https://github.com/chriopter/pspkit-tunnel). TLS, the certificate check, HTTP and Basic stay as they are; only the bytes travel another way. A kept connection that went the old way is closed instead of reused when a host's way changes
+- An address written out (`http://192.168.1.10/`) no longer goes to the console's resolver, which refuses one on real hardware: every source given by IP failed there with "dns failed", while an emulator's resolver let it pass
+
 ## 0.2.10
 
 - `https_set_basic(host, user, password)`: HTTP Basic for one host, for a catalog somebody keeps behind a password. Sent with every request to that host and to no other, a redirect's included; a user name or password with a line break is refused

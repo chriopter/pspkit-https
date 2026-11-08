@@ -124,6 +124,65 @@ static void basic_line(const char *host, char *out, size_t size) {
     pthread_mutex_unlock(&g_basic_lock);
 }
 
+/* Hosts whose bytes go another way than sceNetInet, each with its own
+   connect, send, recv and close. */
+#define TRANSPORT_MAX 8
+static struct { char host[128]; struct https_transport t; } g_transport[TRANSPORT_MAX];
+static pthread_mutex_t g_transport_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void close_idle(void);
+
+int https_set_transport(const char *host, const struct https_transport *t) {
+    if (!host || !*host || strlen(host) >= sizeof(g_transport[0].host)) return -1;
+    if (t && (!t->connect || !t->send || !t->recv || !t->close)) return -1;
+    int rc = 0;
+    pthread_mutex_lock(&g_transport_lock);
+    int at = -1, free_at = -1;
+    for (int i = 0; i < TRANSPORT_MAX; i++) {
+        if (g_transport[i].host[0] && !strcasecmp(g_transport[i].host, host)) at = i;
+        else if (!g_transport[i].host[0] && free_at < 0) free_at = i;
+    }
+    if (!t) {
+        if (at >= 0) g_transport[at].host[0] = '\0';
+    } else {
+        if (at < 0) at = free_at;
+        if (at < 0) rc = -1;
+        else {
+            snprintf(g_transport[at].host, sizeof(g_transport[at].host), "%s", host);
+            g_transport[at].t = *t;
+        }
+    }
+    pthread_mutex_unlock(&g_transport_lock);
+    /* A kept connection went the old way. */
+    if (rc == 0) close_idle();
+    return rc;
+}
+
+/* One connection to a server, kept between requests while idle (see
+   g_idle below). */
+struct connection {
+    int sock;                       /* a socket, or the transport's handle */
+    int tunneled;                   /* through tr rather than sceNetInet */
+    struct https_transport tr;
+    WOLFSSL *ssl;
+    char host[128];
+    unsigned short port;
+    int plain;
+    unsigned idle_at;
+};
+
+static int transport_for(const char *host, struct https_transport *out) {
+    int found = 0;
+    pthread_mutex_lock(&g_transport_lock);
+    for (int i = 0; i < TRANSPORT_MAX && !found; i++)
+        if (g_transport[i].host[0] && !strcasecmp(g_transport[i].host, host)) {
+            *out = g_transport[i].t;
+            found = 1;
+        }
+    pthread_mutex_unlock(&g_transport_lock);
+    return found;
+}
+
 static unsigned now_ms(void) {
     return (unsigned)(sceKernelGetSystemTimeWide() / 1000);
 }
@@ -413,6 +472,10 @@ fail:
 /* The PSP resolver rather than getaddrinfo: newlib's lookup path yields
    "Trying 0.0.0.0" here, so it is not to be trusted. */
 static int resolve(const char *host, struct in_addr *out) {
+    /* An address written out is its own answer. The console's resolver
+       refuses one (an emulator's does not), which made every source given
+       by IP -- a catalog at home -- fail on hardware as "dns failed". */
+    if (inet_aton(host, out)) return 0;
     char buf[1024];                 /* each caller its own: two may look up at once */
     int rid = -1;
     if (sceNetResolverCreate(&rid, buf, sizeof(buf)) < 0) return -1;
@@ -486,8 +549,15 @@ static void pace(int n) {
 static int io_recv(WOLFSSL *ssl, char *buf, int sz, void *ctx) {
     (void)ssl;
     if (sz <= 0) return 0;
-    int fd = *(int *)ctx;
+    struct connection *c = ctx;
+    int fd = c->sock;
 
+    if (c->tunneled) {
+        int n = c->tr.recv(fd, buf, sz, c->tr.ctx);
+        if (n > 0) { pace(n); entropy_stir(&n, sizeof(n)); return n; }
+        if (n == 0) return WOLFSSL_CBIO_ERR_CONN_CLOSE;
+        return n == HTTPS_AGAIN ? WOLFSSL_CBIO_ERR_WANT_READ : WOLFSSL_CBIO_ERR_GENERAL;
+    }
     int n = psp_recv(fd, buf, sz);
     if (n > 0) {
         pace(n);
@@ -515,8 +585,14 @@ static int io_recv(WOLFSSL *ssl, char *buf, int sz, void *ctx) {
 static int io_send(WOLFSSL *ssl, char *buf, int sz, void *ctx) {
     (void)ssl;
     if (sz <= 0) return 0;
-    int fd = *(int *)ctx;
+    struct connection *c = ctx;
+    int fd = c->sock;
 
+    if (c->tunneled) {
+        int n = c->tr.send(fd, buf, sz, c->tr.ctx);
+        if (n >= 0) return n;
+        return n == HTTPS_AGAIN ? WOLFSSL_CBIO_ERR_WANT_WRITE : WOLFSSL_CBIO_ERR_GENERAL;
+    }
     int n = psp_send(fd, buf, sz);
     if (n >= 0) return n;
 
@@ -939,14 +1015,6 @@ static void roots_release(void) {
    of a second on a PSP. */
 #define IDLE_SLOTS 6
 #define IDLE_MS 60000
-struct connection {
-    int sock;
-    WOLFSSL *ssl;
-    char host[128];
-    unsigned short port;
-    int plain;
-    unsigned idle_at;
-};
 static struct connection *g_idle[IDLE_SLOTS];
 
 static void close_connection(struct connection *c, int graceful) {
@@ -955,7 +1023,10 @@ static void close_connection(struct connection *c, int graceful) {
         if (graceful) wolfSSL_shutdown(c->ssl);
         wolfSSL_free(c->ssl);
     }
-    if (c->sock >= 0) sceNetInetClose(c->sock);
+    if (c->sock >= 0) {
+        if (c->tunneled) c->tr.close(c->sock, c->tr.ctx);
+        else sceNetInetClose(c->sock);
+    }
     free(c);
 }
 
@@ -972,13 +1043,24 @@ static void close_idle(void) {
 
 void https_close_idle(void) { close_idle(); }
 
+/* Whether a kept connection still goes the way its host is set to go: one
+   opened before https_set_transport changed the host's way, and returned
+   to the pool after, is closed rather than used again. */
+static int route_current(const struct connection *c) {
+    struct https_transport t;
+    int tunneled = transport_for(c->host, &t);
+    if (tunneled != c->tunneled) return 0;
+    return !tunneled || (t.connect == c->tr.connect && t.send == c->tr.send &&
+                         t.recv == c->tr.recv && t.close == c->tr.close && t.ctx == c->tr.ctx);
+}
+
 static struct connection *take_idle(const struct url *u) {
     struct connection *found = NULL;
     pthread_mutex_lock(&g_lock);
     for (int i = 0; i < IDLE_SLOTS; i++) {
         struct connection *c = g_idle[i];
         if (!c) continue;
-        if (expired(c->idle_at, IDLE_MS)) {
+        if (expired(c->idle_at, IDLE_MS) || !route_current(c)) {
             close_connection(c, 0);
             g_idle[i] = NULL;
         } else if (c->port == u->port && c->plain == u->plain && !strcmp(c->host, u->host)) {
@@ -992,6 +1074,7 @@ static struct connection *take_idle(const struct url *u) {
 }
 
 static void save_idle(struct connection *c) {
+    if (!route_current(c)) { close_connection(c, 1); return; }
     pthread_mutex_lock(&g_lock);
     int slot = -1;
     for (int i = 0; i < IDLE_SLOTS; i++)
@@ -1126,6 +1209,28 @@ static int request_with(const struct url *u, https_sink sink, void *sink_ctx,
         logline("https: reuse %s", u->host);
         goto request;
     }
+    struct https_transport tr;
+    unsigned start;
+    if (transport_for(u->host, &tr)) {
+        phase("connect");
+        conn = calloc(1, sizeof(*conn));
+        if (!conn) return -1;
+        snprintf(conn->host, sizeof(conn->host), "%s", u->host);
+        conn->port = u->port;
+        conn->plain = u->plain;
+        conn->tunneled = 1;
+        conn->tr = tr;
+        start = now_ms();
+        conn->sock = tr.connect(u->host, u->port, tr.ctx);
+        if (conn->sock < 0) {
+            logline("https: %s:%u not reached through its transport", u->host, u->port);
+            goto out;
+        }
+        sock = conn->sock;
+        logline("https: %s through its transport in %u ms", u->host, now_ms() - start);
+        stir_power(now_ms() - start);
+        goto connected;
+    }
     struct in_addr ip;
     phase("dns");
     if (resolve(u->host, &ip) < 0) { logline("dns failed: %s", u->host); return -1; }
@@ -1159,7 +1264,7 @@ static int request_with(const struct url *u, https_sink sink, void *sink_ctx,
 
     /* Poll completion without select: the stack answers EALREADY while
        connecting and EISCONN (or 0) once the connection stands. */
-    unsigned start = now_ms();
+    start = now_ms();
     if (sceNetInetConnect(sock, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         int e = sceNetInetGetErrno();
         if (e != EINPROGRESS && e != EALREADY && e != EWOULDBLOCK) {
@@ -1182,6 +1287,7 @@ static int request_with(const struct url *u, https_sink sink, void *sink_ctx,
     }
     stir_power(now_ms() - start);
 
+connected:
     /* http:// has no handshake: the request goes out on the socket as it is. */
     if (u->plain) {
         logline("%s plain http, no TLS", u->host);
@@ -1204,8 +1310,8 @@ static int request_with(const struct url *u, https_sink sink, void *sink_ctx,
         logline("cipher list rejected: %s", g_suites);
         goto out;
     }
-    wolfSSL_SetIOReadCtx(ssl, &conn->sock);
-    wolfSSL_SetIOWriteCtx(ssl, &conn->sock);
+    wolfSSL_SetIOReadCtx(ssl, conn);
+    wolfSSL_SetIOWriteCtx(ssl, conn);
     if (wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, u->host,
                        (unsigned short)strlen(u->host)) != WOLFSSL_SUCCESS)
         logline("SNI rejected");
@@ -1284,7 +1390,7 @@ request:
     start = now_ms();
     for (int sent = 0; sent < reqlen; ) {
         rc = ssl ? wolfSSL_write(ssl, buf + sent, reqlen - sent)
-                 : io_send(NULL, buf + sent, reqlen - sent, &sock);
+                 : io_send(NULL, buf + sent, reqlen - sent, conn);
         if (rc > 0) { sent += rc; continue; }
         int e = ssl ? wolfSSL_get_error(ssl, rc) : plain_error(rc);
         if (e != WOLFSSL_ERROR_WANT_READ && e != WOLFSSL_ERROR_WANT_WRITE) {
@@ -1323,7 +1429,7 @@ request:
             progress_at = now_ms();
         }
         if (aborted()) goto out;
-        rc = ssl ? wolfSSL_read(ssl, buf, REQUEST_BUF) : io_recv(NULL, buf, REQUEST_BUF, &sock);
+        rc = ssl ? wolfSSL_read(ssl, buf, REQUEST_BUF) : io_recv(NULL, buf, REQUEST_BUF, conn);
         if (rc > 0) {
             if (body_start) start = now_ms();
             const char *data = buf;
