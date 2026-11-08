@@ -59,6 +59,14 @@ struct https_transport {
 };
 int https_set_transport(const char *host, const struct https_transport *t);
 
+/* Any thread: Mozilla's roots, the ones this library trusts and keeps
+   current, parsed into a wolfSSL context of the caller's -- for a library
+   that opens TLS connections of its own (pspkit-tunnel's to its relays)
+   and should trust what this one trusts. The number loaded, 0 for none.
+   Parsing them takes about a tenth of a second on a PSP. */
+struct WOLFSSL_CTX;
+int https_load_roots(struct WOLFSSL_CTX *ctx);
+
 /* Worker, between requests: cap received data in decimal kilobytes per
    second; zero removes the limit. */
 void https_set_rate_limit(unsigned kbps);

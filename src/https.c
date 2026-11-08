@@ -898,6 +898,10 @@ static int roots_parse(WOLFSSL_CTX *ctx) {
 #endif
 }
 
+int https_load_roots(struct WOLFSSL_CTX *ctx) {
+    return ctx ? roots_parse(ctx) : 0;
+}
+
 static WOLFSSL_CTX *roots_load(void) {
     unsigned start = now_ms();
     if (!g_wolf_ready) {

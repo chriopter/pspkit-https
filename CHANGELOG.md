@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.12
+
+- `https_load_roots(ctx)`: Mozilla's roots, the ones this library trusts and keeps current every week, parsed into a wolfSSL context of the caller's, so a library with TLS connections of its own (pspkit-tunnel's relays) trusts the same and is kept current with it
+
 ## 0.2.11
 
 - `https_set_transport(host, transport)`: a host reached through something other than the console's own sockets -- a tunnel such as [pspkit-tunnel](https://github.com/chriopter/pspkit-tunnel). TLS, the certificate check, HTTP and Basic stay as they are; only the bytes travel another way. A kept connection that went the old way is closed instead of reused when a host's way changes
