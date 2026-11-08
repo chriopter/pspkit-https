@@ -387,6 +387,21 @@ int main(void) {
               "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\ne") == HTTPS_COMPLETE);
     CHECK(tls_sessions == sessions && strstr(requests, "GET /e HTTP/1.1") != NULL);
 
+    /* A password goes to its own host only: a redirect elsewhere asks
+       without it, one back to the host with it again. */
+    CHECK(https_set_basic("shelf.lan", "pspdx", "test-password") == 0);
+    CHECK(get("http://shelf.lan/f", &r,
+              "HTTP/1.1 302 Found\r\nLocation: http://cdn.example.com/f\r\nContent-Length: 0\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nf") == HTTPS_COMPLETE);
+    CHECK(count(requests, "\r\nAuthorization: Basic cHNwZHg6dGVzdC1wYXNzd29yZA==\r\n") == 1);
+    CHECK(strstr(requests, "Host: shelf.lan\r\n") < strstr(requests, "Authorization"));
+    CHECK(strstr(strstr(requests, "Host: cdn.example.com"), "Authorization") == NULL);
+    CHECK(https_set_basic("SHELF.lan", "pspdx", NULL) == 0);
+    CHECK(get("http://shelf.lan/g", &r, "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n", NULL) ==
+          HTTPS_COMPLETE);
+    CHECK(r.status == 401 && !strstr(requests, "Authorization"));
+    CHECK(https_set_basic("shelf.lan", "a\r\nX-Evil: 1", "pw") == -1);
+
     https_net_disconnect();
     printf("request: %s\n", failures ? "FAILED" : "ok");
     return failures != 0;

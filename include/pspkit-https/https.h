@@ -33,6 +33,13 @@ void https_set_user_agent(const char *agent);
    read content_encoding in the result. A server may answer plain anyway. */
 void https_set_accept_gzip(int on);
 
+/* Any thread: a user name and password for one host, sent with every
+   request to it as HTTP Basic -- a catalog somebody keeps at home behind a
+   password. Never to any other host, a redirect's included. A NULL or empty
+   password forgets the host. Up to eight hosts; 0, or -1 when the table is
+   full or a field is too long. Over http:// it goes in the clear. */
+int https_set_basic(const char *host, const char *user, const char *password);
+
 /* Worker, between requests: cap received data in decimal kilobytes per
    second; zero removes the limit. */
 void https_set_rate_limit(unsigned kbps);

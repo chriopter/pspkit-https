@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.10
+
+- `https_set_basic(host, user, password)`: HTTP Basic for one host, for a catalog somebody keeps behind a password. Sent with every request to that host and to no other, a redirect's included; a user name or password with a line break is refused
+
 ## 0.2.9
 
 - `http://` URLs, for servers people host themselves: a plain socket, port 80 by default, and everything else as for `https://`, from the head to chunked bodies, redirects and idle connections, which are kept apart from TLS ones. A redirect from `https://` down to `http://` is still refused; one from `http://` up to `https://` is followed

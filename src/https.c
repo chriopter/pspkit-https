@@ -67,6 +67,63 @@ void https_set_user_agent(const char *agent) { g_agent = agent ? agent : DEFAULT
 static int g_accept_gzip;
 void https_set_accept_gzip(int on) { g_accept_gzip = on != 0; }
 
+/* Host -> the Authorization header's value, "Basic <base64 of user:password>". */
+#define BASIC_MAX 8
+static struct { char host[128]; char value[200]; } g_basic[BASIC_MAX];
+static pthread_mutex_t g_basic_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void base64(const unsigned char *in, size_t n, char *out) {
+    static const char digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (size_t i = 0; i < n; i += 3) {
+        unsigned v = (unsigned)in[i] << 16 | (i + 1 < n ? (unsigned)in[i + 1] << 8 : 0) |
+                     (i + 2 < n ? in[i + 2] : 0);
+        *out++ = digits[v >> 18 & 63];
+        *out++ = digits[v >> 12 & 63];
+        *out++ = i + 1 < n ? digits[v >> 6 & 63] : '=';
+        *out++ = i + 2 < n ? digits[v & 63] : '=';
+    }
+    *out = '\0';
+}
+
+int https_set_basic(const char *host, const char *user, const char *password) {
+    char plain[140], value[200];
+    if (!host || !*host || strlen(host) >= sizeof(g_basic[0].host)) return -1;
+    int n = password && *password ? snprintf(plain, sizeof(plain), "%s:%s", user ? user : "", password) : 0;
+    if (n < 0 || n >= (int)sizeof(plain) || (n && strpbrk(plain, "\r\n"))) return -1;
+    if (n) {
+        memcpy(value, "Basic ", 6);
+        base64((const unsigned char *)plain, (size_t)n, value + 6);
+    }
+    pthread_mutex_lock(&g_basic_lock);
+    int at = -1, free_at = -1;
+    for (int i = 0; i < BASIC_MAX; i++) {
+        if (!strcasecmp(g_basic[i].host, host)) at = i;
+        else if (!g_basic[i].host[0] && free_at < 0) free_at = i;
+    }
+    if (at < 0) at = free_at;
+    int rc = 0;
+    if (!n) {
+        if (at >= 0 && g_basic[at].host[0]) g_basic[at].host[0] = '\0';
+    } else if (at < 0) {
+        rc = -1;
+    } else {
+        snprintf(g_basic[at].host, sizeof(g_basic[at].host), "%s", host);
+        snprintf(g_basic[at].value, sizeof(g_basic[at].value), "%s", value);
+    }
+    pthread_mutex_unlock(&g_basic_lock);
+    return rc;
+}
+
+/* The Authorization line for host, or "". */
+static void basic_line(const char *host, char *out, size_t size) {
+    out[0] = '\0';
+    pthread_mutex_lock(&g_basic_lock);
+    for (int i = 0; i < BASIC_MAX; i++)
+        if (g_basic[i].host[0] && !strcasecmp(g_basic[i].host, host))
+            snprintf(out, size, "Authorization: %s\r\n", g_basic[i].value);
+    pthread_mutex_unlock(&g_basic_lock);
+}
+
 static unsigned now_ms(void) {
     return (unsigned)(sceKernelGetSystemTimeWide() / 1000);
 }
@@ -1211,13 +1268,17 @@ request:
     char authority[140];
     if (u->port == (u->plain ? PLAIN_PORT : PORT)) snprintf(authority, sizeof(authority), "%s", u->host);
     else snprintf(authority, sizeof(authority), "%s:%u", u->host, u->port);
+    /* The password goes to the host it was given for, and to no other:
+       each request, a redirect's too, asks again by its own host. */
+    char auth[230];
+    basic_line(u->host, auth, sizeof(auth));
     int reqlen = snprintf(buf, REQUEST_BUF,
                           "GET %s HTTP/1.1\r\n"
                           "Host: %s\r\n"
                           "User-Agent: %s\r\n"
-                          "%s"
+                          "%s%s"
                           "Connection: keep-alive\r\n\r\n", u->path, authority, g_agent,
-                          g_accept_gzip ? "Accept-Encoding: gzip\r\n" : "");
+                          g_accept_gzip ? "Accept-Encoding: gzip\r\n" : "", auth);
     if (reqlen <= 0 || reqlen >= REQUEST_BUF) { logline("request too long"); goto out; }
 
     start = now_ms();

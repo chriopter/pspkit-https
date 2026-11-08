@@ -86,6 +86,7 @@ the dialog only while network workers are stopped.
 - ChaCha20-Poly1305 is used first: the PSP has no AES hardware, and 5 MB take 1.3 s with ChaCha against 4.8 s with AES-GCM
 - X25519 for the key exchange, about seven times faster than P-256 on a PSP
 - Redirects are followed (up to 5), but never from `https://` down to `http://`
+- A password for one host, `https_set_basic(host, user, password)`, goes with every request to that host as HTTP Basic, and to no other, a redirect's included
 - `http://` works too, for a server somebody hosts at home: no TLS, so nothing about it is checked, and a download from it is only as good as the hash the caller holds it to
 - Sockets explicitly enable PSPSDK `SO_NONBLOCK`; timeout checks must remain reachable after a dropped WLAN connection
 - Progress callbacks also run periodically while waiting for response data, with unchanged byte counts, so a UI can still cancel a stalled download
