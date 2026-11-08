@@ -33,6 +33,13 @@ void https_set_user_agent(const char *agent);
    read content_encoding in the result. A server may answer plain anyway. */
 void https_set_accept_gzip(int on);
 
+/* Worker, between requests: ask for the body from byte `from` on
+   ("Range: bytes=from-") until set back to zero -- to go on with a download
+   that broke off. Only the calling thread's requests ask so. The server
+   answers 206 with the rest, or 200 with all of it when it does not do
+   ranges; the caller tells the two apart by status. */
+void https_set_range(size_t from);
+
 /* Any thread: a user name and password for one host, sent with every
    request to it as HTTP Basic -- a catalog somebody keeps at home behind a
    password. Never to any other host, a redirect's included. A NULL or empty

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.13
+
+- `https_set_range(from)`: ask for a body from a given byte on (`Range: bytes=from-`), to go on with a download that broke off. Only the calling thread's requests ask so, so icons fetched beside a download still get theirs whole; the server answers 206 with the rest, or 200 with everything when it does not do ranges
+
 ## 0.2.12
 
 - `https_load_roots(ctx)`: Mozilla's roots, the ones this library trusts and keeps current every week, parsed into a wolfSSL context of the caller's, so a library with TLS connections of its own (pspkit-tunnel's relays) trusts the same and is kept current with it

@@ -67,6 +67,15 @@ void https_set_user_agent(const char *agent) { g_agent = agent ? agent : DEFAULT
 static int g_accept_gzip;
 void https_set_accept_gzip(int on) { g_accept_gzip = on != 0; }
 
+/* The body from this byte on, for the thread that asked: another thread's
+   requests -- icons beside a download -- go on asking for all of theirs. */
+static size_t g_range_from;
+static SceUID g_range_thread = -1;
+void https_set_range(size_t from) {
+    g_range_thread = from ? sceKernelGetThreadId() : -1;
+    g_range_from = from;
+}
+
 /* Host -> the Authorization header's value, "Basic <base64 of user:password>". */
 #define BASIC_MAX 8
 static struct { char host[128]; char value[200]; } g_basic[BASIC_MAX];
@@ -1380,15 +1389,17 @@ request:
     else snprintf(authority, sizeof(authority), "%s:%u", u->host, u->port);
     /* The password goes to the host it was given for, and to no other:
        each request, a redirect's too, asks again by its own host. */
-    char auth[230];
+    char auth[230], range[48] = "";
     basic_line(u->host, auth, sizeof(auth));
+    if (g_range_from && g_range_thread == sceKernelGetThreadId())
+        snprintf(range, sizeof(range), "Range: bytes=%lu-\r\n", (unsigned long)g_range_from);
     int reqlen = snprintf(buf, REQUEST_BUF,
                           "GET %s HTTP/1.1\r\n"
                           "Host: %s\r\n"
                           "User-Agent: %s\r\n"
-                          "%s%s"
+                          "%s%s%s"
                           "Connection: keep-alive\r\n\r\n", u->path, authority, g_agent,
-                          g_accept_gzip ? "Accept-Encoding: gzip\r\n" : "", auth);
+                          g_accept_gzip ? "Accept-Encoding: gzip\r\n" : "", range, auth);
     if (reqlen <= 0 || reqlen >= REQUEST_BUF) { logline("request too long"); goto out; }
 
     start = now_ms();
