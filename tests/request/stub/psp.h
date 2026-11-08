@@ -24,6 +24,7 @@ SceUID sceKernelCreateThread(const char *name, int (*entry)(SceSize, void *), in
 int sceKernelStartThread(SceUID thread, SceSize args, void *argp);
 int sceKernelDeleteThread(SceUID thread);
 int sceKernelWaitThreadEnd(SceUID thread, unsigned *timeout);
+SceUID sceKernelGetThreadId(void);
 
 int sceUtilityLoadNetModule(int module);
 int sceUtilityUnloadNetModule(int module);

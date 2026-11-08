@@ -419,6 +419,7 @@ SceUID sceKernelCreateThread(const char *name, int (*entry)(SceSize, void *), in
 int sceKernelStartThread(SceUID thread, SceSize args, void *argp) { return -1; }
 int sceKernelDeleteThread(SceUID thread) { return 0; }
 int sceKernelWaitThreadEnd(SceUID thread, unsigned *timeout) { return 0; }
+SceUID sceKernelGetThreadId(void) { return 1; }
 int sceUtilityLoadNetModule(int module) { return 0; }
 int sceUtilityUnloadNetModule(int module) { return 0; }
 int sceNetInit(int pool, int a, int b, int c, int d) { return 0; }
